@@ -1,0 +1,12 @@
+# Gegenereerde previews (door tools/make-preview.cjs)
+preview.html
+preview-image.html
+preview-filter.html
+preview-verloop.html
+preview-verloop13.html
+
+# OS / editor
+.DS_Store
+Thumbs.db
+node_modules/
+*.log

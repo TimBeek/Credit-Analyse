@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#db5461">
+<title>ReMarkt · Credit Analyse</title>
+<link rel="stylesheet" href="assets/credit-analyse.css">
+</head>
+<body>
+<div class="app" id="creditApp">
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="34" height="34" role="img" aria-label="ReMarkt">
+          <rect x="1" y="1" width="30" height="30" rx="9" fill="#db5461"></rect>
+          <path d="M22.5 12.2a7 7 0 1 0 1.1 5.3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"></path>
+          <path d="M22.9 8.6l.4 4.1-4.1-.5z" fill="#fff"></path>
+        </svg>
+      </span>
+      <div class="brand-text">
+        <span class="brand-name">ReMarkt</span>
+        <span class="brand-sub">Credit Analyse</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <button class="btn btn-report" id="downloadImage" type="button" hidden>
+        <span class="btn-ic" aria-hidden="true">🖼</span>Afbeelding voor Wout
+      </button>
+      <button class="btn btn-report" id="downloadReport" type="button" hidden>
+        <span class="btn-ic" aria-hidden="true">⤓</span>Rapport (PDF)
+      </button>
+      <label class="btn btn-primary">
+        <span class="btn-ic" aria-hidden="true">+</span>
+        <input id="fileInputHeader" type="file" accept=".xlsx,.xls,.csv" hidden>
+        Importeren
+      </label>
+      <button class="btn btn-ghost" id="exportCsv" type="button" hidden>CSV</button>
+      <button class="btn btn-ghost" id="clearHistory" type="button" hidden>Wissen</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="upload-band" id="uploadBand">
+      <div class="upload-zone" id="dropZone">
+        <div class="upload-copy">
+          <strong>Zet hier het vrijdagbestand neer</strong>
+          <span>Sleep het Excel-bestand hierheen of kies het. De app bewaart alleen geaggregeerde cijfers — geen klantnamen of ordernummers.</span>
+        </div>
+        <label class="btn btn-secondary">
+          <span class="btn-ic" aria-hidden="true">⤒</span>
+          <input id="fileInputDrop" type="file" accept=".xlsx,.xls,.csv" hidden>
+          Bestand kiezen
+        </label>
+      </div>
+    </section>
+
+    <section class="context-strip" id="contextStrip" hidden></section>
+
+    <section class="import-banner" id="importBanner" hidden></section>
+
+    <section class="control-bar" id="controlBar" hidden>
+      <div class="control-group">
+        <span class="control-label">Periode</span>
+        <div class="segmented" role="group" aria-label="Periode">
+          <button type="button" class="is-active" data-period-type="week">Week</button>
+          <button type="button" data-period-type="month">Maand</button>
+          <button type="button" data-period-type="quarter">Kwartaal</button>
+          <button type="button" data-period-type="year">Jaar</button>
+        </div>
+      </div>
+      <label class="control-field">
+        <span class="control-label">Welke</span>
+        <select id="periodSelect"></select>
+      </label>
+      <label class="control-field">
+        <span class="control-label">Herkomst</span>
+        <select id="originSelect">
+          <option value="all">Alle herkomsten</option>
+          <option value="Klantenservice">Klantenservice</option>
+          <option value="Retouren">Retouren</option>
+        </select>
+      </label>
+      <label class="control-field grow">
+        <span class="control-label">Zoek reden</span>
+        <input id="reasonSearch" type="search" placeholder="Alle redenen">
+      </label>
+    </section>
+
+    <section class="dashboard" id="dashboard" hidden>
+      <nav class="tabs" id="dashboardTabs" aria-label="Onderdelen">
+        <button type="button" class="is-active" data-tab="overview">Overzicht &amp; vergelijking</button>
+        <button type="button" data-tab="verloop">Verloop per periode</button>
+        <button type="button" data-tab="control">Import &amp; controle</button>
+      </nav>
+
+      <!-- OVERZICHT + VERGELIJKING -->
+      <div class="tab-panel" data-tab-section="overview">
+        <div id="hero" class="hero"></div>
+        <div id="focusRow" class="focus-row"></div>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Waar zit het in?</h2>
+              <p>De ~40 redenen gebundeld in vijf groepen. De balk laat zien waar het geld zit; <strong>Voorkombaar (onze fout)</strong> staat rood.</p>
+            </div>
+          </div>
+          <div id="groupBreakdown" class="group-breakdown"></div>
+        </article>
+
+        <div id="signalBand" class="signal-band"></div>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Deze periode vs vorige periode</h2>
+              <p id="compareMeta" class="panel-meta"></p>
+            </div>
+          </div>
+          <div id="compareTable" class="table-wrap"></div>
+        </article>
+      </div>
+
+      <!-- VERLOOP -->
+      <div class="tab-panel" data-tab-section="verloop" hidden>
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Verloop totaal teruggestort</h2>
+              <p>Per week, maand, kwartaal of jaar — kies bovenin. Klik een balk om die periode te openen.</p>
+            </div>
+          </div>
+          <div id="trendChart" class="trend-wrap"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Retouren vs Klantenservice</h2>
+              <p>Aantal en bedrag per herkomst voor de gekozen periode, met het verschil ten opzichte van de vorige.</p>
+            </div>
+          </div>
+          <div id="originSplit" class="trend-wrap"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Periodetotalen</h2>
+              <p>Elk totaal met het verschil in % en euro's ten opzichte van de periode ervoor.</p>
+            </div>
+          </div>
+          <div id="periodTotals" class="table-wrap"></div>
+        </article>
+      </div>
+
+      <!-- IMPORT & CONTROLE -->
+      <div class="tab-panel" data-tab-section="control" hidden>
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Importcontrole</h2>
+              <p>Wat is verwerkt, hersteld of overgeslagen bij de laatste import.</p>
+            </div>
+          </div>
+          <div id="qualityDetails" class="quality-grid"></div>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Privacy</h2>
+              <p>Analyse zonder klantgegevens in de historie.</p>
+            </div>
+          </div>
+          <div class="privacy-list">
+            <div><strong>Niet opgeslagen</strong><span>Klantnaam en ordernummer</span></div>
+            <div><strong>Wel opgeslagen</strong><span>Periode, reden, herkomst, bedrag en aantal</span></div>
+            <div><strong>Waar</strong><span>Alleen lokaal in deze browser — niets gaat naar internet</span></div>
+          </div>
+        </article>
+      </div>
+    </section>
+  </main>
+</div>
+
+<script src="assets/xlsx.full.min.js"></script>
+<script src="assets/jspdf.umd.min.js"></script>
+<script src="assets/credit-analyse.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "remarkt-credit-analyse-app",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Losse ReMarkt app voor wekelijkse creditanalyse zonder klantnamen in de rapportage.",
+  "scripts": {
+    "dev": "node tools/static-server.mjs",
+    "start": "node tools/static-server.mjs",
+    "check": "node --check tools/static-server.mjs && node --check assets/credit-analyse.js",
+    "test": "node tools/test.cjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
