@@ -8,7 +8,32 @@
 
   const STORAGE_KEY = "remarkt.creditAnalyse.records.v2";
   const META_KEY = "remarkt.creditAnalyse.meta.v2";
+  const ACTIVE_KEY = "remarkt.creditAnalyse.activeAt.v2";
+  const RETENTION_MS = 30 * 60 * 1000;   // auto-wis na 30 minuten inactiviteit
+  const RETENTION_LABEL = "30 minuten";
   const FALLBACK_REASON = "Overige";
+
+  function retentionExpired(activeAt, now) {
+    return Boolean(activeAt) && (now - activeAt) > RETENTION_MS;
+  }
+
+  // Wist opgeslagen analyse als die te lang ongebruikt is (privacy). Draait vóór
+  // het laden, zodat een terugkerende bezoeker geen oude data ziet.
+  function wipeIfStale() {
+    if (!HAS_STORAGE) return;
+    try {
+      if (!localStorage.getItem(STORAGE_KEY)) return;
+      const activeAt = Number(localStorage.getItem(ACTIVE_KEY) || 0);
+      if (retentionExpired(activeAt, Date.now())) {
+        localStorage.removeItem(STORAGE_KEY);
+        localStorage.removeItem(META_KEY);
+        localStorage.removeItem(ACTIVE_KEY);
+      } else if (!activeAt) {
+        localStorage.setItem(ACTIVE_KEY, String(Date.now()));
+      }
+    } catch { /* opslag niet beschikbaar */ }
+  }
+  wipeIfStale();
 
   const EXPECTED_REASONS = [
     "Aangehouden actieprijs",
@@ -206,6 +231,7 @@
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
       localStorage.setItem(META_KEY, JSON.stringify(meta || null));
+      localStorage.setItem(ACTIVE_KEY, String(Date.now()));
     } catch (error) {
       const quota = error && (error.name === "QuotaExceededError" || error.name === "NS_ERROR_DOM_QUOTA_REACHED");
       throw new Error(quota
@@ -1828,10 +1854,40 @@
     if (!window.confirm("Alle lokaal bewaarde creditanalyse wissen?")) return;
     state.records = []; state.meta = null; state.quality = null;
     state.selectedKey = ""; state.selectedTrendKey = ""; state.activeTab = "overview"; state.selectedGroupFilter = "";
-    if (HAS_STORAGE) { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); }
+    if (HAS_STORAGE) { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem(ACTIVE_KEY); }
     els.dropZone.querySelector("strong").textContent = "Zet hier het vrijdagbestand neer";
     els.dropZone.querySelector("span").textContent = "Sleep het Excel-bestand hierheen of kies het. De app bewaart alleen geaggregeerde cijfers — geen klantnamen of ordernummers.";
     renderDashboard();
+  }
+
+  // Registreert gebruik (throttled) zodat de analyse niet wordt gewist zolang
+  // iemand actief bezig is.
+  let lastTouchWrite = 0;
+  function touchActivity() {
+    if (!HAS_STORAGE || !state.records.length) return;
+    const now = Date.now();
+    if (now - lastTouchWrite < 20000) return;
+    lastTouchWrite = now;
+    try { localStorage.setItem(ACTIVE_KEY, String(now)); } catch { /* opslag niet beschikbaar */ }
+  }
+
+  // Wist de analyse automatisch na RETENTION_MS zonder gebruik (privacy).
+  function autoWipe() {
+    if (!state.records.length) return;
+    state.records = []; state.meta = null; state.quality = null;
+    state.selectedKey = ""; state.selectedTrendKey = ""; state.selectedGroupFilter = ""; state.activeTab = "overview";
+    if (HAS_STORAGE) { try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem(ACTIVE_KEY); } catch { /* noop */ } }
+    if (els.dropZone) {
+      els.dropZone.querySelector("strong").textContent = "Analyse automatisch gewist";
+      els.dropZone.querySelector("span").textContent = `Na ${RETENTION_LABEL} zonder gebruik is de analyse voor de privacy gewist. Importeer het vrijdagbestand opnieuw om verder te gaan.`;
+    }
+    renderDashboard();
+  }
+
+  function checkExpiry() {
+    if (!HAS_STORAGE || !state.records.length) return;
+    const activeAt = Number(localStorage.getItem(ACTIVE_KEY) || 0);
+    if (retentionExpired(activeAt, Date.now())) autoWipe();
   }
 
   function showError(error) {
@@ -2316,6 +2372,9 @@
   if (IS_BROWSER) {
     wireEvents();
     renderDashboard();
+    // Privacy: registreer gebruik en wis de analyse na 30 min inactiviteit.
+    ["click", "keydown", "change", "input"].forEach(ev => els.app.addEventListener(ev, touchActivity, true));
+    setInterval(checkExpiry, 60000);
     // Handvat voor previews/diagnose (niet nodig voor normaal gebruik).
     window.creditAnalyseApp = { state, getDashboardContext, generateReportImage, generateReportPdf, renderDashboard };
   }
@@ -2329,8 +2388,8 @@
       getDashboardContext, buildHeadline, focusStats, reasonGroupKey, makePeriodKeys,
       parseMoney, parseDateValue, correctYearNumber, labelPeriod, periodSortValue,
       renderDashboard, generateReportPdf, generateReportImage, exportCurrentCsv, buildPlainConclusion,
-      forecastSeries, nextPeriodKey,
-      FOCUS_REASONS, REASON_GROUPS, PREVENTABLE_GROUP,
+      forecastSeries, nextPeriodKey, retentionExpired,
+      FOCUS_REASONS, REASON_GROUPS, PREVENTABLE_GROUP, RETENTION_MS,
     };
   }
 }());

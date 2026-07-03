@@ -51,7 +51,7 @@ De app schoont bekende fouten automatisch op en meldt dat in gewone taal bovenin
 
 ## Privacy
 
-Alles blijft lokaal in de browser. Klantnaam en ordernummer worden bij import herkend maar **nooit opgeslagen** — alleen periode, reden, herkomst, bedrag en aantal.
+Alles blijft lokaal in de browser. Klantnaam en ordernummer worden bij import herkend maar **nooit opgeslagen** — alleen periode, reden, herkomst, bedrag en aantal. De analyse wordt bovendien **na 30 minuten zonder gebruik automatisch gewist**, zodat er geen data blijft staan op een gedeeld apparaat.
 
 ## Ontwikkeling / kwaliteit
 

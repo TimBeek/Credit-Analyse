@@ -224,5 +224,14 @@ ok("≥2 seizoenscycli → Holt-Winters seizoensmodel", /Holt-Winters/.test(fSea
 ok("nextPeriodKey week rolt door", api.nextPeriodKey("week", "2026-W52") === "2027-W01" && api.nextPeriodKey("week", "2026-W26") === "2026-W27");
 
 // ---------------------------------------------------------------------------
+console.log("\n10. Privacy: automatisch wissen na 30 min inactiviteit");
+const NOW = 1000000000000;
+ok("RETENTION_MS = 30 minuten", api.RETENTION_MS === 30 * 60 * 1000, `got ${api.RETENTION_MS}`);
+ok("geen tijdstempel → niet wissen", api.retentionExpired(0, NOW) === false);
+ok("31 min inactief → wissen", api.retentionExpired(NOW - 31 * 60 * 1000, NOW) === true);
+ok("29 min inactief → niet wissen", api.retentionExpired(NOW - 29 * 60 * 1000, NOW) === false);
+ok("net actief → niet wissen", api.retentionExpired(NOW, NOW) === false);
+
+// ---------------------------------------------------------------------------
 console.log(`\nResultaat: ${pass} geslaagd, ${fail} gefaald`);
 process.exit(fail ? 1 : 0);
