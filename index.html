@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="theme-color" content="#db5461">
-<title>ReMarkt · Credit Analyse</title>
+<meta name="theme-color" content="#070b0f">
+<title>ReMarkt - Credit Analyse</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -28,18 +28,18 @@
     </div>
     <div class="header-actions">
       <button class="btn btn-report" id="downloadImage" type="button" hidden>
-        <span class="btn-ic" aria-hidden="true">🖼</span>Afbeelding voor Wout
+        <span class="btn-ic" aria-hidden="true">IMG</span>Management snapshot
       </button>
       <button class="btn btn-report" id="downloadReport" type="button" hidden>
-        <span class="btn-ic" aria-hidden="true">⤓</span>Rapport (PDF)
+        <span class="btn-ic" aria-hidden="true">PDF</span>Directie PDF
       </button>
       <label class="btn btn-primary">
         <span class="btn-ic" aria-hidden="true">+</span>
         <input id="fileInputHeader" type="file" accept=".xlsx,.xls,.csv" hidden>
-        Importeren
+        Nieuwe import
       </label>
       <button class="btn btn-ghost" id="exportCsv" type="button" hidden>CSV</button>
-      <button class="btn btn-ghost" id="clearHistory" type="button" hidden>Wissen</button>
+      <button class="btn btn-ghost" id="clearHistory" type="button" hidden>Reset</button>
     </div>
   </header>
 
@@ -92,9 +92,9 @@
 
     <section class="dashboard" id="dashboard" hidden>
       <nav class="tabs" id="dashboardTabs" aria-label="Onderdelen">
-        <button type="button" class="is-active" data-tab="overview">Overzicht &amp; vergelijking</button>
-        <button type="button" data-tab="verloop">Verloop per periode</button>
-        <button type="button" data-tab="control">Import &amp; controle</button>
+        <button type="button" class="is-active" data-tab="overview">Executive overzicht</button>
+        <button type="button" data-tab="verloop">Trendanalyse</button>
+        <button type="button" data-tab="control">Controle</button>
       </nav>
 
       <!-- OVERZICHT + VERGELIJKING -->
@@ -105,8 +105,8 @@
         <article class="panel">
           <div class="panel-head">
             <div>
-              <h2>Waar zit het in?</h2>
-              <p>De ~40 redenen gebundeld in vijf groepen. De balk laat zien waar het geld zit; <strong>Voorkombaar (onze fout)</strong> staat rood.</p>
+              <h2>Creditmix</h2>
+              <p>Alle redenen gebundeld in vijf beslisgroepen. Voorkombare kosten staan als prioriteit gemarkeerd.</p>
             </div>
           </div>
           <div id="groupBreakdown" class="group-breakdown"></div>
@@ -117,7 +117,7 @@
         <article class="panel">
           <div class="panel-head">
             <div>
-              <h2>Deze periode vs vorige periode</h2>
+              <h2>Redenenranking</h2>
               <p id="compareMeta" class="panel-meta"></p>
             </div>
           </div>
@@ -130,8 +130,8 @@
         <article class="panel">
           <div class="panel-head">
             <div>
-              <h2>Verloop totaal teruggestort</h2>
-              <p>Per week, maand, kwartaal of jaar — kies bovenin. Klik een balk om die periode te openen.</p>
+              <h2>Trendmonitor</h2>
+              <p>Historie met normaalzone, uitschieters, inhaalweken en prognose.</p>
             </div>
           </div>
           <div id="trendChart" class="trend-wrap"></div>
@@ -140,8 +140,8 @@
         <article class="panel">
           <div class="panel-head">
             <div>
-              <h2>Retouren vs Klantenservice</h2>
-              <p>Aantal en bedrag per herkomst voor de gekozen periode, met het verschil ten opzichte van de vorige.</p>
+              <h2>Herkomstsplit</h2>
+              <p>Aantal, bedrag en verschuiving tussen Retouren en Klantenservice.</p>
             </div>
           </div>
           <div id="originSplit" class="trend-wrap"></div>
@@ -150,8 +150,8 @@
         <article class="panel">
           <div class="panel-head">
             <div>
-              <h2>Periodetotalen</h2>
-              <p>Elk totaal met het verschil in % en euro's ten opzichte van de periode ervoor.</p>
+              <h2>Historietabel</h2>
+              <p>Periodetotalen met delta, omvang en signalering van uitzonderlijke rondes.</p>
             </div>
           </div>
           <div id="periodTotals" class="table-wrap"></div>
@@ -163,8 +163,8 @@
         <article class="panel">
           <div class="panel-head">
             <div>
-              <h2>Importcontrole</h2>
-              <p>Wat is verwerkt, hersteld of overgeslagen bij de laatste import.</p>
+              <h2>Datakwaliteit</h2>
+              <p>Verwerkte regels, herstelacties, onbekende redenen en harde uitval.</p>
             </div>
           </div>
           <div id="qualityDetails" class="quality-grid"></div>
@@ -173,8 +173,8 @@
         <article class="panel">
           <div class="panel-head">
             <div>
-              <h2>Privacy</h2>
-              <p>Analyse zonder klantgegevens in de historie.</p>
+              <h2>Privacy &amp; opslag</h2>
+              <p>Lokale analyse zonder klantnamen of ordernummers in de historie.</p>
             </div>
           </div>
           <div class="privacy-list">

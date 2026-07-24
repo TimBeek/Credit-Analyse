@@ -116,11 +116,11 @@
   // Voorkombaar = rood (aandacht). De rest in aflopende tinten van één rustige
   // blauwtint, zodat de compositie leesbaar blijft zonder regenboog.
   const GROUP_COLORS = {
-    voorkombaar: "#db5461",
-    klant: "#3e6f93",
-    transport: "#6a93b0",
-    product: "#94b2c9",
-    overig: "#c0d0dd",
+    voorkombaar: "#ff4f75",
+    klant: "#36d39a",
+    transport: "#65e4de",
+    product: "#8c75ff",
+    overig: "#f6c75a",
   };
 
   // Bepaalt de groep van een reden op basis van trefwoorden, zodat ook nieuwe
@@ -920,6 +920,54 @@
     return { keys, totals, counts, count, avg, stdev, threshold: avg + (1.5 * stdev) };
   }
 
+  function median(values) {
+    const clean = values.filter(value => Number.isFinite(value)).slice().sort((a, b) => a - b);
+    if (!clean.length) return 0;
+    const middle = Math.floor(clean.length / 2);
+    return clean.length % 2 ? clean[middle] : (clean[middle - 1] + clean[middle]) / 2;
+  }
+
+  // Administratieve inhaalweek: als een week bijna niets bevat en de week erna
+  // juist veel, beoordelen we de piek met een 2-weeksgemiddelde zonder ruwe data
+  // te verplaatsen. Dat past bij retouren die door vakantie pas later betaald zijn.
+  function detectCatchUpWeek(ctx) {
+    if (ctx.type !== "week" || !ctx.previousKey || !ctx.key) return null;
+    const keys = ctx.periodStats.keys;
+    const index = keys.indexOf(ctx.key);
+    if (index <= 0) return null;
+
+    const previousTotal = ctx.previous.total;
+    const currentTotal = ctx.current.total;
+    if (currentTotal <= 0) return null;
+
+    const baselineValues = ctx.periodStats.totals
+      .filter((_, i) => i !== index && i !== index - 1)
+      .filter(value => value > 0);
+    if (baselineValues.length < 3) return null;
+
+    const baseline = median(baselineValues);
+    if (!baseline) return null;
+
+    const previousLow = previousTotal <= baseline * 0.35;
+    const currentHigh = currentTotal >= baseline * 1.45;
+    const combinedTotal = previousTotal + currentTotal;
+    const normalizedWeekly = combinedTotal / 2;
+    const plausibleTwoWeeks = normalizedWeekly >= baseline * 0.65 && normalizedWeekly <= baseline * 1.55;
+    if (!previousLow || !currentHigh || !plausibleTwoWeeks) return null;
+
+    return {
+      previousKey: ctx.previousKey,
+      currentKey: ctx.key,
+      previousTotal,
+      currentTotal,
+      combinedTotal,
+      normalizedWeekly,
+      baseline,
+      normalizedVsBaselinePct: baseline ? ((normalizedWeekly - baseline) / baseline) * 100 : 0,
+      currentVsBaselinePct: baseline ? ((currentTotal - baseline) / baseline) * 100 : 0,
+    };
+  }
+
   function focusStats(ctx) {
     return FOCUS_REASONS.map(name => {
       const row = ctx.comparison.find(item => normalizeKey(item.reason) === normalizeKey(name));
@@ -932,38 +980,51 @@
 
   function buildSignals(ctx) {
     const signals = [];
-    const preventable = ctx.groupComparison.find(group => group.key === PREVENTABLE_GROUP);
-    if (preventable) {
-      const risingShare = preventable.shareDelta >= 3;
-      const risingAmount = preventable.amountDelta > 0 && preventable.previousAmount > 0 && preventable.amountDeltaPct >= 20;
-      if (preventable.amount > 0 && (risingShare || risingAmount)) {
-        signals.push({
-          tone: "bad", title: "Voorkombare fouten stijgen",
-          detail: `Onze eigen fouten kostten ${formatMoney(preventable.amount)} (${formatPercent(preventable.share, 0)} van het totaal), ${formatSignedPercent(preventable.amountDeltaPct, 0)} t.o.v. ${PERIOD_TYPES[ctx.type].previousLabel}.`,
-        });
-      }
-    }
-    // Focusredenen die in aandeel stijgen.
-    ctx.focus.forEach(row => {
-      if (row.currentAmount > 0 && row.shareDelta >= 2) {
-        signals.push({
-          tone: "warn", title: `${row.reason} stijgt in aandeel`,
-          detail: `Nu ${formatPercent(row.currentShare, 1)} van het totaal (${formatSignedPercent(row.shareDelta, 1)}-punt t.o.v. ${PERIOD_TYPES[ctx.type].previousLabel}), goed voor ${formatMoney(row.currentAmount)}.`,
-        });
-      }
-    });
-    // Nieuwe redenen die er vorige periode nog niet waren en geld kosten.
-    ctx.comparison
-      .filter(row => row.previousAmount === 0 && row.currentAmount > 0)
-      .sort((a, b) => b.currentAmount - a.currentAmount)
-      .slice(0, 2)
-      .forEach(row => {
-        signals.push({
-          tone: "warn", title: `Nieuwe reden: ${row.reason}`,
-          detail: `Deze ${PERIOD_TYPES[ctx.type].label.toLowerCase()} nieuw, goed voor ${formatMoney(row.currentAmount)} (${formatNumber(row.currentCount)} credits).`,
-        });
+    if (ctx.catchUp) {
+      signals.push({
+        tone: "warn",
+        title: "Inhaalweek door gemiste betaalronde",
+        detail: `${labelPeriod("week", ctx.catchUp.previousKey)} was ongewoon laag en ${labelPeriod("week", ctx.catchUp.currentKey)} bevat waarschijnlijk twee weken retouren. Interpretatie: ${formatMoney(ctx.catchUp.combinedTotal)} over twee weken = ${formatMoney(ctx.catchUp.normalizedWeekly)} per week. Ruwe cijfers blijven ongewijzigd.`,
       });
-    if (ctx.headline.isOutlier) {
+    }
+    if (!ctx.catchUp) {
+      const preventable = ctx.groupComparison.find(group => group.key === PREVENTABLE_GROUP);
+      if (preventable) {
+        const risingShare = preventable.shareDelta >= 3;
+        const risingAmount = preventable.amountDelta > 0 && preventable.previousAmount > 0 && preventable.amountDeltaPct >= 20;
+        if (preventable.amount > 0 && (risingShare || risingAmount)) {
+          signals.push({
+            tone: "bad", title: "Voorkombare fouten stijgen",
+            detail: `Onze eigen fouten kostten ${formatMoney(preventable.amount)} (${formatPercent(preventable.share, 0)} van het totaal), ${formatSignedPercent(preventable.amountDeltaPct, 0)} t.o.v. ${PERIOD_TYPES[ctx.type].previousLabel}.`,
+          });
+        }
+      }
+      // Focusredenen die in aandeel stijgen.
+      ctx.focus.forEach(row => {
+        if (row.currentAmount > 0 && row.shareDelta >= 2) {
+          signals.push({
+            tone: "warn", title: `${row.reason} stijgt in aandeel`,
+            detail: `Nu ${formatPercent(row.currentShare, 1)} van het totaal (${formatSignedPercent(row.shareDelta, 1)}-punt t.o.v. ${PERIOD_TYPES[ctx.type].previousLabel}), goed voor ${formatMoney(row.currentAmount)}.`,
+          });
+        }
+      });
+    }
+    // Nieuwe redenen die er vorige periode nog niet waren en geld kosten. Bij een
+    // inhaalweek slaan we dit over: een lege vorige week maakt bestaande redenen
+    // anders onterecht "nieuw".
+    if (!ctx.catchUp) {
+      ctx.comparison
+        .filter(row => row.previousAmount === 0 && row.currentAmount > 0)
+        .sort((a, b) => b.currentAmount - a.currentAmount)
+        .slice(0, 2)
+        .forEach(row => {
+          signals.push({
+            tone: "warn", title: `Nieuwe reden: ${row.reason}`,
+            detail: `Deze ${PERIOD_TYPES[ctx.type].label.toLowerCase()} nieuw, goed voor ${formatMoney(row.currentAmount)} (${formatNumber(row.currentCount)} credits).`,
+          });
+        });
+    }
+    if (ctx.headline.isOutlier && !ctx.catchUp) {
       signals.push({ tone: "bad", title: "Valt op t.o.v. normaal", detail: `Het totaal ligt duidelijk boven het gemiddelde van ${formatMoney(ctx.periodStats.avg)} per ${PERIOD_TYPES[ctx.type].label.toLowerCase()}.` });
     }
     return signals.slice(0, 5);
@@ -988,6 +1049,10 @@
     } else if (totalDeltaPct <= -8) {
       tone = "down"; title = `Lager dan ${PERIOD_TYPES[ctx.type].previousLabel} — goed`;
     }
+    if (ctx.catchUp) {
+      tone = "flat";
+      title = "Inhaalweek: twee weken samen bekijken";
+    }
     return { totalDelta, totalDeltaPct, hasPrevious, vsAvgPct, enoughHistory, isOutlier, tone, title, periodWord };
   }
 
@@ -998,6 +1063,9 @@
     const prevWord = PERIOD_TYPES[ctx.type].previousLabel;
     const top = ctx.comparison.filter(row => row.currentAmount > 0).sort((a, b) => b.currentAmount - a.currentAmount)[0];
     const preventable = ctx.groupComparison.find(group => group.key === PREVENTABLE_GROUP) || { share: 0 };
+    if (ctx.catchUp) {
+      return `Deze week is administratief vertekend: ${labelPeriod("week", ctx.catchUp.previousKey)} was laag en ${labelPeriod("week", ctx.catchUp.currentKey)} bevat vermoedelijk twee betaalweken. Ruw teruggestort: ${formatMoney(ctx.current.total)}. Gecorrigeerd 2-weeksgemiddelde: ${formatMoney(ctx.catchUp.normalizedWeekly)} per week (${formatSignedPercent(ctx.catchUp.normalizedVsBaselinePct, 0)} t.o.v. normaal).`;
+    }
     let dir;
     if (!h.hasPrevious) dir = "er is nog geen vorige periode om mee te vergelijken";
     else if (h.totalDeltaPct >= 1) dir = `dat is ${formatPercent(Math.abs(h.totalDeltaPct), 0)} méér dan ${prevWord}`;
@@ -1023,6 +1091,7 @@
       groupComparison: buildGroupComparison(current, previous),
       periodStats: getPeriodStats(type),
     };
+    ctx.catchUp = detectCatchUpWeek(ctx);
     ctx.headline = buildHeadline(ctx);
     ctx.focus = focusStats(ctx);
     ctx.signals = buildSignals(ctx);
@@ -1152,16 +1221,21 @@
     const h = ctx.headline;
     const avgPerCredit = ctx.current.count ? ctx.current.total / ctx.current.count : 0;
     const countDelta = ctx.current.count - ctx.previous.count;
-    const deltaLine = h.hasPrevious
-      ? `<span class="delta-badge ${h.tone}">${trendArrow(h.totalDeltaPct)} ${formatSignedPercent(h.totalDeltaPct, 0)}</span> t.o.v. ${escapeHtml(PERIOD_TYPES[ctx.type].previousLabel)} (${formatMoney(ctx.previous.total)})`
-      : `Nog geen vorige ${escapeHtml(h.periodWord)} om mee te vergelijken.`;
+    const deltaLine = ctx.catchUp
+      ? `Week-op-week is hier niet zinvol: ${escapeHtml(labelPeriod("week", ctx.catchUp.previousKey))} was een gemiste betaalronde (${formatMoney(ctx.catchUp.previousTotal)}).`
+      : h.hasPrevious
+        ? `<span class="delta-badge ${h.tone}">${trendArrow(h.totalDeltaPct)} ${formatSignedPercent(h.totalDeltaPct, 0)}</span> t.o.v. ${escapeHtml(PERIOD_TYPES[ctx.type].previousLabel)} (${formatMoney(ctx.previous.total)})`
+        : `Nog geen vorige ${escapeHtml(h.periodWord)} om mee te vergelijken.`;
     const avgLine = h.enoughHistory
-      ? `${trendArrow(h.vsAvgPct)} ${formatSignedPercent(h.vsAvgPct, 0)} t.o.v. gemiddeld (${formatMoney(ctx.periodStats.avg)})`
+      ? (ctx.catchUp
+        ? `Gecorrigeerd: ${formatMoney(ctx.catchUp.normalizedWeekly)} per week (${formatSignedPercent(ctx.catchUp.normalizedVsBaselinePct, 0)} t.o.v. normale weken)`
+        : `${trendArrow(h.vsAvgPct)} ${formatSignedPercent(h.vsAvgPct, 0)} t.o.v. gemiddeld (${formatMoney(ctx.periodStats.avg)})`)
       : `Nog te weinig ${escapeHtml(PERIOD_TYPES[ctx.type].plural)} voor een gemiddelde.`;
 
     const prevLabel = PERIOD_TYPES[ctx.type].previousLabel;
     const preventable = ctx.groupComparison.find(group => group.key === PREVENTABLE_GROUP) || { amount: 0, share: 0 };
     const topReason = ctx.comparison.filter(row => row.currentAmount > 0).sort((a, b) => b.currentAmount - a.currentAmount)[0];
+    const sparkline = buildHeroSparkline(ctx);
 
     els.hero.className = `hero tone-${h.tone}`;
     els.hero.innerHTML = `
@@ -1173,7 +1247,14 @@
         <div class="hero-line">${deltaLine}</div>
         <div class="hero-line muted">${avgLine}</div>
         <p class="hero-plain">${escapeHtml(buildPlainConclusion(ctx))}</p>
+        ${ctx.catchUp ? `
+          <div class="catchup-note">
+            <strong>Inhaalcorrectie actief</strong>
+            <span>Ruw: ${escapeHtml(labelPeriod("week", ctx.catchUp.previousKey))} ${formatMoney(ctx.catchUp.previousTotal)} + ${escapeHtml(labelPeriod("week", ctx.catchUp.currentKey))} ${formatMoney(ctx.catchUp.currentTotal)}. Voor beoordeling gebruikt: ${formatMoney(ctx.catchUp.normalizedWeekly)} per week.</span>
+          </div>
+        ` : ""}
       </div>
+      ${sparkline ? `<div class="hero-visual">${sparkline}</div>` : ""}
       <div class="hero-kpis">
         <div class="kpi"><span>Gemiddeld per credit</span><strong>${formatMoney(avgPerCredit)}</strong><em class="is-flat">terugbetaling</em></div>
         <div class="kpi"><span>Aantal credits</span><strong>${formatNumber(ctx.current.count)}</strong><em class="${costTrendClass(countDelta)}">${countDelta > 0 ? "+" : countDelta < 0 ? "−" : ""}${formatNumber(Math.abs(countDelta))} vs ${escapeHtml(prevLabel)}</em></div>
@@ -1198,9 +1279,13 @@
     ];
     const prevLabel = PERIOD_TYPES[ctx.type].previousLabel;
     els.focusRow.innerHTML = cards.map(card => {
-      const movement = card.previousShare > 0
-        ? `${escapeHtml(prevLabel)} ${formatPercent(card.previousShare, 1)} → nu ${formatPercent(card.share, 1)}`
-        : `nieuw deze ${escapeHtml(PERIOD_TYPES[ctx.type].label.toLowerCase())}`;
+      const movement = card.amount <= 0
+        ? `geen bedrag deze ${escapeHtml(PERIOD_TYPES[ctx.type].label.toLowerCase())}`
+        : card.previousShare > 0
+          ? `${escapeHtml(prevLabel)} ${formatPercent(card.previousShare, 1)} → nu ${formatPercent(card.share, 1)}`
+          : ctx.catchUp
+            ? "vorige week was een gemiste betaalronde"
+            : `nieuw deze ${escapeHtml(PERIOD_TYPES[ctx.type].label.toLowerCase())}`;
       return `
       <div class="focus-card accent-${card.accent}">
         <span class="focus-label">${escapeHtml(card.label)}</span>
@@ -1513,6 +1598,13 @@
       { label: outCount === 1 ? "Uitschieter" : "Uitschieters", value: formatNumber(outCount), alert: outCount > 0 },
       { label: fc ? `Prognose ${PERIOD_TYPES[type].previousLabel.replace("vorige", "volgende").replace("vorig", "volgend")}` : "Prognose", value: fc ? M.axis(fc.preds[0].y) : "—", accent: true },
     ];
+    if (ctx.catchUp && M.label === "Bedrag") {
+      statCards.unshift({
+        label: `${shortPeriodLabel(type, ctx.catchUp.previousKey)} + ${shortPeriodLabel(type, ctx.catchUp.currentKey)} gemiddeld`,
+        value: formatMoney(ctx.catchUp.normalizedWeekly),
+        catchup: true,
+      });
+    }
 
     const width = 1200, height = 400, left = 92, right = 34, top = 30, bottom = 74;
     const cw = width - left - right, ch = height - top - bottom;
@@ -1559,7 +1651,7 @@
 
     els.trendChart.innerHTML = `
       ${toolbar}
-      <div class="trend-stats">${statCards.map(c => `<div class="trend-stat ${c.alert ? "alert" : ""} ${c.accent ? "accent" : ""}"><strong>${escapeHtml(c.value)}</strong><span>${escapeHtml(c.label)}</span></div>`).join("")}</div>
+      <div class="trend-stats">${statCards.map(c => `<div class="trend-stat ${c.alert ? "alert" : ""} ${c.accent ? "accent" : ""} ${c.catchup ? "catchup" : ""}"><strong>${escapeHtml(c.value)}</strong><span>${escapeHtml(c.label)}</span></div>`).join("")}</div>
       <svg viewBox="0 0 ${width} ${height}" class="trend-svg pro" role="img" aria-label="Verloop ${escapeHtml(M.label.toLowerCase())} per ${escapeHtml(periodWord)}">
         ${showBand ? `<rect class="band-normal" x="${left.toFixed(1)}" y="${yFor(s.bandHi).toFixed(1)}" width="${(xEnd - left).toFixed(1)}" height="${Math.max(0, yFor(s.bandLo) - yFor(s.bandHi)).toFixed(1)}"></rect>` : ""}
         ${yTicks.map(val => { const y = yFor(val); return `<line class="grid" x1="${left}" x2="${width - right}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"></line><text class="axis-tick" x="${left - 12}" y="${(y + 4).toFixed(1)}" text-anchor="end">${escapeHtml(M.axis(val))}</text>`; }).join("")}
@@ -1579,7 +1671,7 @@
         <span><i class="lg-out"></i>Uitschieter</span>
         ${fc ? `<span><i class="lg-fc"></i>Prognose</span>` : ""}
       </div>
-      <p class="chart-note">${escapeHtml(`${s.n} van ${s.fullN} ${PERIOD_TYPES[type].plural} in beeld (bereik = alleen de zoom). Gemiddelde, normaalzone${outCount ? `, ${outCount} uitschieter${outCount === 1 ? "" : "s"}` : ""} en prognose zijn berekend over de volledige historie (${s.fullN} ${PERIOD_TYPES[type].plural}).`)}${fc ? escapeHtml(` Prognose: ${fc.method}${fc.excluded ? `, ${fc.excluded} uitschieter(s) gladgestreken` : ""} — de band toont de onzekerheid.`) : ""} <span class="chart-note-hint">Klik een punt om die ${escapeHtml(periodWord)} bovenin te openen.</span></p>`;
+      <p class="chart-note">${ctx.catchUp ? `<strong>Inhaalweek:</strong> ${escapeHtml(labelPeriod("week", ctx.catchUp.previousKey))} en ${escapeHtml(labelPeriod("week", ctx.catchUp.currentKey))} samen gemiddeld ${formatMoney(ctx.catchUp.normalizedWeekly)} per week. ` : ""}${escapeHtml(`${s.n} van ${s.fullN} ${PERIOD_TYPES[type].plural} in beeld (bereik = alleen de zoom). Gemiddelde, normaalzone${outCount ? `, ${outCount} uitschieter${outCount === 1 ? "" : "s"}` : ""} en prognose zijn berekend over de volledige historie (${s.fullN} ${PERIOD_TYPES[type].plural}).`)}${fc ? escapeHtml(` Prognose: ${fc.method}${fc.excluded ? `, ${fc.excluded} uitschieter(s) gladgestreken` : ""} — de band toont de onzekerheid.`) : ""} <span class="chart-note-hint">Klik een punt om die ${escapeHtml(periodWord)} bovenin te openen.</span></p>`;
   }
 
   // Periodetotalen-tabel: elke periode vs de vorige (maand vs maand, etc.).
@@ -1611,15 +1703,22 @@
           </tr>
         </thead>
         <tbody>
-          ${rows.map(row => `
+          ${rows.map(row => {
+            const catchUpPill = ctx.catchUp && row.key === ctx.catchUp.currentKey
+              ? ` <span class="pill pill-catchup">inhaalweek</span>`
+              : ctx.catchUp && row.key === ctx.catchUp.previousKey
+                ? ` <span class="pill pill-muted">gemiste ronde</span>`
+                : "";
+            return `
             <tr class="${row.key === ctx.key ? "row-selected" : ""} ${row.key === ctx.latestKey ? "row-latest" : ""}" data-period-key="${escapeHtml(row.key)}">
-              <td><strong>${escapeHtml(labelPeriod(type, row.key))}</strong>${row.key === ctx.latestKey ? ` <span class="pill pill-latest">Nieuwste</span>` : ""}</td>
+              <td><strong>${escapeHtml(labelPeriod(type, row.key))}</strong>${row.key === ctx.latestKey ? ` <span class="pill pill-latest">Nieuwste</span>` : ""}${catchUpPill}</td>
               <td class="num strong">${formatMoney(row.total)}</td>
               <td class="num">${formatNumber(row.count)}</td>
               <td class="num ${row.deltaPct === null ? "muted" : costTrendClass(row.deltaPct)}">${row.deltaPct === null ? "—" : `${trendArrow(row.deltaPct)} ${formatSignedPercent(row.deltaPct, 1)}`}</td>
               <td class="num ${row.delta === null ? "muted" : costTrendClass(row.delta)}">${row.delta === null ? "—" : formatSignedMoney(row.delta)}</td>
               <td class="bar-col"><span class="cell-bar"><i class="neutral" style="width:${Math.max(2, (row.total / maxTotal) * 100)}%"></i></span></td>
-            </tr>`).join("")}
+            </tr>`;
+          }).join("")}
         </tbody>
       </table>
       <p class="table-note">Klik een rij om die ${escapeHtml(PERIOD_TYPES[type].label.toLowerCase())} bovenin te openen.</p>`;
@@ -1956,6 +2055,17 @@
     font("normal", 9.5); set(INK);
     doc.text(h.hasPrevious ? `${formatSignedPercent(h.totalDeltaPct, 0)} t.o.v. ${previousLabel} — die was ${formatMoney(ctx.previous.total)}` : "Nog geen vorige periode om mee te vergelijken.", M + 5, y + 13);
     y += 23;
+
+    if (ctx.catchUp) {
+      doc.setFillColor(247, 238, 216);
+      doc.roundedRect(M, y, CW, 18, 2, 2, "F");
+      font("bold", 10); set([137, 93, 24]);
+      doc.text("Administratieve inhaalweek", M + 5, y + 6.5);
+      font("normal", 8.5); set(INK);
+      const catchUpLine = `${labelPeriod("week", ctx.catchUp.previousKey)} (${formatMoney(ctx.catchUp.previousTotal)}) + ${labelPeriod("week", ctx.catchUp.currentKey)} (${formatMoney(ctx.catchUp.currentTotal)}) samen: ${formatMoney(ctx.catchUp.combinedTotal)}. Gecorrigeerd oordeel: ${formatMoney(ctx.catchUp.normalizedWeekly)} per week.`;
+      doc.text(doc.splitTextToSize(catchUpLine, CW - 10), M + 5, y + 12.5);
+      y += 24;
+    }
 
     // KPI cards
     const kpis = [
@@ -2384,6 +2494,7 @@
     module.exports = {
       state, parseWorkbookRecords, mergeImportedRecords, aggregateRows, detectColumns,
       summarizeRecords, getReasonComparison, groupSummary, buildGroupComparison, getPeriodStats,
+      detectCatchUpWeek,
       getAvailablePeriodKeys, getPreviousKey, recordsForPeriod, filteredRecords,
       getDashboardContext, buildHeadline, focusStats, reasonGroupKey, makePeriodKeys,
       parseMoney, parseDateValue, correctYearNumber, labelPeriod, periodSortValue,
