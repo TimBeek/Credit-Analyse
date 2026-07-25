@@ -69,7 +69,7 @@ html = html.replace('<script src="assets/xlsx.full.min.js"></script>', seed + '<
 // preview.html: toon ook de importmelding (met sluitknop) via een demo-quality.
 const previewHtml = html.replace("</body>", `<script>
 var a=window.creditAnalyseApp;
-a.state.quality={parsedRows:81,storedRecords:24,skippedRows:0,missingOrigin:0,negativeAmountRows:0,possibleDuplicateRows:0,recoveredAmountRows:2,recoveredNeighborDateRows:3,recoveredNeighborWeekYearRows:0,recoveredWeekYearRows:0,correctedYearRows:1,recoveredOriginRows:0,fallbackReasonRows:0,normalizedReasonRows:1,unknownReasons:new Map(),warningSamples:[{rowNumber:12,issue:"Fout jaartal in datum (2202) gecorrigeerd naar 2022"}],skippedSamples:[]};
+a.state.quality={parsedRows:81,storedRecords:24,skippedRows:0,missingAmount:0,missingOrigin:0,negativeAmountRows:0,possibleDuplicateRows:0,recoveredAmountRows:0,recoveredNeighborDateRows:3,recoveredNeighborWeekYearRows:0,recoveredWeekYearRows:0,correctedYearRows:1,recoveredOriginRows:0,fallbackReasonRows:0,normalizedReasonRows:1,unknownReasons:new Map(),warningSamples:[{rowNumber:12,issue:"Fout jaartal in datum (2202) gecorrigeerd naar 2022"}],skippedSamples:[]};
 a.renderDashboard();
 </script>
 </body>`);
@@ -107,4 +107,50 @@ var a=window.creditAnalyseApp; a.state.activeTab="verloop"; a.state.trendRange="
 </script>
 </body>`);
 fs.writeFileSync(path.join(__dirname, "..", "preview-verloop13.html"), verloop13Html, "utf8");
-console.log(`previews geschreven met ${records.length} records`);
+
+// Inhaalweek-preview: W29 is vrijwel leeg, W30 bevat de betaalrondes van twee
+// weken. Dit bewaakt dat iedere vergelijking W28 als normale referentie gebruikt.
+const catchRows = [];
+for (let w = 17; w <= 28; w += 1) {
+  const total = 4100 + ((w % 4) * 140);
+  catchRows.push([w, "Niet akkoord met alt", "Klantenservice", Math.round(total * .28), 12]);
+  catchRows.push([w, "Niet werkzaam", "Retouren", Math.round(total * .24), 10]);
+  catchRows.push([w, "Verkeerd besteld", "Retouren", Math.round(total * .25), 11]);
+  catchRows.push([w, "Fout in website, onjuiste verkoopprijs", "Klantenservice", Math.round(total * .23), 9]);
+}
+catchRows.push([29, "Niet akkoord met alt", "Klantenservice", 180, 3]);
+catchRows.push([30, "Niet akkoord met alt", "Klantenservice", 1120, 14]);
+catchRows.push([30, "Niet werkzaam", "Retouren", 1440, 18]);
+catchRows.push([30, "Verkeerd besteld", "Retouren", 1200, 16]);
+catchRows.push([30, "Niet naar wens, accu", "Retouren", 1040, 12]);
+catchRows.push([30, "Fout in website, onjuiste verkoopprijs", "Klantenservice", 880, 10]);
+catchRows.push([30, "Niet naar wens", "Retouren", 800, 10]);
+catchRows.push([30, "Doorlooptijd retouren te lang", "Retouren", 720, 8]);
+catchRows.push([30, "PostNL, pakket kwijt", "Retouren", 640, 6]);
+catchRows.push([30, "Transportschade", "Retouren", 560, 6]);
+catchRows.push([30, "Terugbetaling dubbele betaling", "Klantenservice", 400, 4]);
+const catchRecords = catchRows.map(([week, reason, origin, amount, count]) => {
+  const p = api.makePeriodKeys(null, 2026, week);
+  return { ...p, reason, origin, amount, count };
+});
+const catchSeed = `<script>
+try {
+  localStorage.setItem("remarkt.creditAnalyse.records.v2", ${JSON.stringify(JSON.stringify(catchRecords))});
+  localStorage.setItem("remarkt.creditAnalyse.meta.v2", JSON.stringify({ filename: "demo-creditanalyse-inhaalweek.xlsx", importedAt: "2026-07-25T09:00:00.000Z" }));
+} catch (e) {}
+</script>
+`;
+const cleanIndex = fs.readFileSync(indexPath, "utf8");
+const catchHtml = cleanIndex.replace('<script src="assets/xlsx.full.min.js"></script>', catchSeed + '<script src="assets/xlsx.full.min.js"></script>');
+fs.writeFileSync(path.join(__dirname, "..", "preview-catchup.html"), catchHtml, "utf8");
+const catchImageHtml = catchHtml
+  .replace("</head>", "<style>#creditApp{display:none!important}body{background:#e9e9e6}</style></head>")
+  .replace("</body>", `<div id="imgbox" style="margin:24px;width:1080px;background:#fff;box-shadow:0 10px 40px rgba(0,0,0,.15)"></div>
+<script>
+var app=window.creditAnalyseApp;
+app.generateReportImage(app.getDashboardContext(),{mount:document.getElementById("imgbox")});
+</script>
+</body>`);
+fs.writeFileSync(path.join(__dirname, "..", "preview-catchup-image.html"), catchImageHtml, "utf8");
+
+console.log(`previews geschreven met ${records.length} standaardrecords en ${catchRecords.length} inhaalweekrecords`);

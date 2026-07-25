@@ -108,7 +108,7 @@ run("renderDashboard tab=control + importmelding (met quality)", () => {
   api.state.quality = {
     file: "x", sheet: "s", sourceRows: 12, parsedRows: 10, storedRecords: 8, skippedRows: 1,
     missingOrigin: 1, negativeAmountRows: 0, possibleDuplicateRows: 1,
-    recoveredNeighborDateRows: 2, recoveredWeekYearRows: 3, recoveredNeighborWeekYearRows: 1, recoveredAmountRows: 2, correctedYearRows: 1, recoveredOriginRows: 1,
+    recoveredNeighborDateRows: 2, recoveredWeekYearRows: 3, recoveredNeighborWeekYearRows: 1, recoveredAmountRows: 0, missingAmount: 2, correctedYearRows: 1, recoveredOriginRows: 1,
     fallbackReasonRows: 1, normalizedReasonRows: 1,
     unknownReasons: new Map([["Iets nieuws", { count: 2, suggestion: "Niet werkzaam" }]]),
     warningSamples: [{ rowNumber: 7, issue: "Jaar 2202 gecorrigeerd naar 2022" }, { rowNumber: 5, issue: "Datum overgenomen van regel erboven" }],

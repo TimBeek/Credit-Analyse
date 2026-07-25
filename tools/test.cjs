@@ -161,7 +161,7 @@ const altImp = ctxImp.comparison.find(r => r.reason === "Niet akkoord met alt");
 ok("ALT aandeel na import = bedrag/totaal", near(altImp.currentShare, 100 * 3405.40 / w26Total, 0.01), `got ${altImp.currentShare}`);
 
 // ---------------------------------------------------------------------------
-console.log("\n6b. Leeg bedrag/week overnemen van buurregel");
+console.log("\n6b. Leeg bedrag veilig in quarantaine");
 const gapData = [
   xlsxRow("Transportschade", "Retouren", "150,00", "ORD-3001", "A", 27, 2026),
   xlsxRow("Transportschade", "Retouren", "", "ORD-3002", "B", 27, 2026),        // leeg bedrag
@@ -170,9 +170,10 @@ const gapData = [
 const wb2 = XLSX.utils.book_new();
 XLSX.utils.book_append_sheet(wb2, XLSX.utils.json_to_sheet(gapData), "Credit ruwe data");
 const parsed2 = api.parseWorkbookRecords(wb2, "gap.xlsx");
-ok("1 leeg bedrag overgenomen van buurregel", parsed2.quality.recoveredAmountRows === 1, `got ${parsed2.quality.recoveredAmountRows}`);
-ok("regel met leeg bedrag niet overgeslagen", parsed2.quality.skippedRows === 0, `got ${parsed2.quality.skippedRows}`);
-ok("overgenomen bedrag = 150 van de buurregel", parsed2.records.some(r => r.reason === "Transportschade" && near(r.amount, 300)), JSON.stringify(parsed2.records.find(r => r.reason === "Transportschade")));
+ok("1 leeg bedrag gemarkeerd", parsed2.quality.missingAmount === 1, `got ${parsed2.quality.missingAmount}`);
+ok("regel met leeg bedrag veilig overgeslagen", parsed2.quality.skippedRows === 1, `got ${parsed2.quality.skippedRows}`);
+ok("geen bedrag uit buurregel verzonnen", parsed2.quality.recoveredAmountRows === 0, `got ${parsed2.quality.recoveredAmountRows}`);
+ok("alleen het echte bedrag van 150 blijft staan", parsed2.records.some(r => r.reason === "Transportschade" && near(r.amount, 150)), JSON.stringify(parsed2.records.find(r => r.reason === "Transportschade")));
 
 // ---------------------------------------------------------------------------
 console.log("\n7. Jaar-correctie (pijnpunt: kromme jaartallen)");
@@ -200,7 +201,34 @@ ok("jaar in de records = 2022", parsed3.records.every(r => r.yearKey === "2022")
 ok("2202-datum als correctie gemeld", (parsed3.quality.correctedYearRows || 0) >= 1, `got ${parsed3.quality.correctedYearRows}`);
 
 // ---------------------------------------------------------------------------
-console.log("\n9. Forecast (exponential smoothing / gedempte trend)");
+console.log("\n9. Inhaalweek: één consistente beoordelingsbasis");
+const catchUpRecords = [];
+for (let week = 25; week <= 28; week += 1) {
+  catchUpRecords.push(rec(`2026-W${week}`, "2026-06", "Niet akkoord met alt", "Klantenservice", 2000, 20));
+  catchUpRecords.push(rec(`2026-W${week}`, "2026-06", "Transportschade", "Retouren", 2000, 20));
+}
+catchUpRecords.push(rec("2026-W29", "2026-07", "Niet akkoord met alt", "Klantenservice", 100, 1));
+catchUpRecords.push(rec("2026-W30", "2026-07", "Niet akkoord met alt", "Klantenservice", 3900, 39));
+catchUpRecords.push(rec("2026-W30", "2026-07", "Transportschade", "Retouren", 4000, 40));
+resetState(catchUpRecords);
+api.state.selectedKey = "2026-W30";
+const catchCtx = api.getDashboardContext();
+const catchAlt = catchCtx.comparison.find(row => row.reason === "Niet akkoord met alt");
+ok("inhaalweek wordt gedetecteerd", Boolean(catchCtx.catchUp));
+ok("laatste normale week W28 is referentie", catchCtx.comparisonPreviousKey === "2026-W28", `got ${catchCtx.comparisonPreviousKey}`);
+ok("W29 + W30 gemiddeld = 4.000", near(catchCtx.analysisCurrent.total, 4000), `got ${catchCtx.analysisCurrent.total}`);
+ok("gecorrigeerd totaalverschil = 0", near(catchCtx.headline.decisionDelta, 0), `got ${catchCtx.headline.decisionDelta}`);
+ok("werkelijk uitbetaald bedrag blijft 3.900 zichtbaar", near(catchAlt.currentAmount, 3900), `got ${catchAlt.currentAmount}`);
+ok("beoordelingsbedrag ALT = 2.000", near(catchAlt.comparisonCurrentAmount, 2000), `got ${catchAlt.comparisonCurrentAmount}`);
+ok("ALT verschil versus W28 = 0", near(catchAlt.amountDelta, 0), `got ${catchAlt.amountDelta}`);
+ok("zichtbare groepsbedragen tellen op tot ruwe W30", near(catchCtx.groupComparison.reduce((sum, group) => sum + group.amount, 0), 7900));
+ok("beoordelingsgroepen tellen op tot weekgemiddelde", near(catchCtx.groupComparison.reduce((sum, group) => sum + group.comparisonAmount, 0), 4000));
+const catchTrend = api.getTrendSeries(catchCtx);
+ok("inhaalweek vervuilt de normaalzone niet", catchTrend.statsN === 4 && near(catchTrend.avg, 4000), `statsN ${catchTrend.statsN}, avg ${catchTrend.avg}`);
+ok("prognose is voor inhaalweek echt uit de schaalberekening", catchTrend.forecast === null && near(catchTrend.maxVal, 7900), `forecast ${catchTrend.forecast}, max ${catchTrend.maxVal}`);
+
+// ---------------------------------------------------------------------------
+console.log("\n10. Forecast (exponential smoothing / gedempte trend)");
 const noOut = arr => arr.map(() => false);
 const rising = [100, 108, 121, 130, 142, 149, 161, 170, 182, 191];
 const fRise = api.forecastSeries(rising, noOut(rising), 0, 4);
@@ -224,7 +252,7 @@ ok("≥2 seizoenscycli → Holt-Winters seizoensmodel", /Holt-Winters/.test(fSea
 ok("nextPeriodKey week rolt door", api.nextPeriodKey("week", "2026-W52") === "2027-W01" && api.nextPeriodKey("week", "2026-W26") === "2026-W27");
 
 // ---------------------------------------------------------------------------
-console.log("\n10. Privacy: automatisch wissen na 30 min inactiviteit");
+console.log("\n11. Privacy: automatisch wissen na 30 min inactiviteit");
 const NOW = 1000000000000;
 ok("RETENTION_MS = 30 minuten", api.RETENTION_MS === 30 * 60 * 1000, `got ${api.RETENTION_MS}`);
 ok("geen tijdstempel → niet wissen", api.retentionExpired(0, NOW) === false);

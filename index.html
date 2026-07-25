@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="theme-color" content="#070b0f">
+<meta name="theme-color" content="#db5461">
 <title>ReMarkt - Credit Analyse</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
@@ -11,11 +11,12 @@
 <link rel="stylesheet" href="assets/credit-analyse.css">
 </head>
 <body>
+<a class="skip-link" href="#dashboard">Ga naar de analyse</a>
 <div class="app" id="creditApp">
   <header class="app-header">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="34" height="34" role="img" aria-label="ReMarkt">
+        <svg viewBox="0 0 32 32" width="34" height="34">
           <rect x="1" y="1" width="30" height="30" rx="9" fill="#db5461"></rect>
           <path d="M22.5 12.2a7 7 0 1 0 1.1 5.3" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"></path>
           <path d="M22.9 8.6l.4 4.1-4.1-.5z" fill="#fff"></path>
@@ -33,9 +34,9 @@
       <button class="btn btn-report" id="downloadReport" type="button" hidden>
         <span class="btn-ic" aria-hidden="true">PDF</span>Directie PDF
       </button>
-      <label class="btn btn-primary">
+      <label class="btn btn-primary" role="button" tabindex="0" data-file-trigger>
         <span class="btn-ic" aria-hidden="true">+</span>
-        <input id="fileInputHeader" type="file" accept=".xlsx,.xls,.csv" hidden>
+        <input id="fileInputHeader" type="file" accept=".xlsx,.xls,.csv" hidden tabindex="-1">
         Nieuwe import
       </label>
       <button class="btn btn-ghost" id="exportCsv" type="button" hidden>CSV</button>
@@ -50,9 +51,9 @@
           <strong>Zet hier het vrijdagbestand neer</strong>
           <span>Sleep het Excel-bestand hierheen of kies het. De app bewaart alleen geaggregeerde cijfers — geen klantnamen of ordernummers.</span>
         </div>
-        <label class="btn btn-secondary">
+        <label class="btn btn-secondary" role="button" tabindex="0" data-file-trigger>
           <span class="btn-ic" aria-hidden="true">⤒</span>
-          <input id="fileInputDrop" type="file" accept=".xlsx,.xls,.csv" hidden>
+          <input id="fileInputDrop" type="file" accept=".xlsx,.xls,.csv" hidden tabindex="-1">
           Bestand kiezen
         </label>
       </div>
@@ -91,14 +92,14 @@
     </section>
 
     <section class="dashboard" id="dashboard" hidden>
-      <nav class="tabs" id="dashboardTabs" aria-label="Onderdelen">
-        <button type="button" class="is-active" data-tab="overview">Executive overzicht</button>
-        <button type="button" data-tab="verloop">Trendanalyse</button>
-        <button type="button" data-tab="control">Controle</button>
+      <nav class="tabs" id="dashboardTabs" role="tablist" aria-label="Onderdelen">
+        <button type="button" class="is-active" id="tab-overview" role="tab" aria-controls="panel-overview" aria-selected="true" data-tab="overview">Executive overzicht</button>
+        <button type="button" id="tab-verloop" role="tab" aria-controls="panel-verloop" aria-selected="false" data-tab="verloop">Trendanalyse</button>
+        <button type="button" id="tab-control" role="tab" aria-controls="panel-control" aria-selected="false" data-tab="control">Controle</button>
       </nav>
 
       <!-- OVERZICHT + VERGELIJKING -->
-      <div class="tab-panel" data-tab-section="overview">
+      <div class="tab-panel" id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" data-tab-section="overview">
         <div id="hero" class="hero"></div>
         <div id="focusRow" class="focus-row"></div>
 
@@ -126,7 +127,7 @@
       </div>
 
       <!-- VERLOOP -->
-      <div class="tab-panel" data-tab-section="verloop" hidden>
+      <div class="tab-panel" id="panel-verloop" role="tabpanel" aria-labelledby="tab-verloop" data-tab-section="verloop" hidden>
         <article class="panel">
           <div class="panel-head">
             <div>
@@ -159,7 +160,7 @@
       </div>
 
       <!-- IMPORT & CONTROLE -->
-      <div class="tab-panel" data-tab-section="control" hidden>
+      <div class="tab-panel" id="panel-control" role="tabpanel" aria-labelledby="tab-control" data-tab-section="control" hidden>
         <article class="panel">
           <div class="panel-head">
             <div>

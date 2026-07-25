@@ -18,13 +18,14 @@ Open daarna: `http://localhost:8091/`
 - **Hero:** het totaal teruggestort van de gekozen periode, groot, met het **verschil in % t.o.v. de vorige periode** (bv. €14.699, +30% t.o.v. vorige week) en t.o.v. het gemiddelde. Rood = hoger, groen = lager. Plus een gewone-taal conclusiezin voor wie geen analist is.
 - **Focustegels:** *Niet akkoord met ALT* en *Niet werkzaam* (door Wout genoemd) plus *Voorkombaar (onze fout)* — elk met het % van het totaal en de beweging (bv. "vorige week 23,0% → nu 23,2%").
 - **Waar zit het in:** de ~40 redenen gebundeld in vijf groepen met een compositiebalk en **bedrag groot** per groep. De groepen zijn **knoppen**: klik een groep om de tabel eronder te filteren op alleen die redenen (met subtotaal). Voorkombaar (onze fout) staat rood.
-- **Vergelijktabel (de kern):** per reden het bedrag, aantal, **% van totaal nu**, **% vorige periode**, **verschil aandeel (%-punt)** en **verschil €**. Onderaan het eindtotaal met het %-verschil. Met een uitlegregel en gemarkeerde focusredenen/voorkombare fouten.
+- **Vergelijktabel (de kern):** per reden het bedrag, aantal, **% van totaal nu**, **% vorige periode**, **verschil aandeel (%-punt)** en **verschil €**. De kolommen zijn sorteerbaar en blijven bruikbaar met toetsenbord en schermlezer. Met een uitlegregel en gemarkeerde focusredenen/voorkombare fouten.
 
 **Verloop per periode**
 - Professionele lijn/vlak-grafiek van het totaal per week/maand/kwartaal/jaar, met filters (**Bedrag / Aantal / Gemiddeld**, bereik 13/26/52/alles), een **normaalzone** (gemiddelde ± spreiding), rood gemarkeerde **uitschieters** en klikbare punten.
 - **Prognose** (aan/uit): exponential smoothing (ETS) — automatisch **Holt-Winters** met seizoen bij ≥2 volledige cycli, anders een **gedempte trend** (schiet niet door); uitschieters worden eerst gladgestreken en de band toont de onzekerheid.
 - **Retouren vs Klantenservice:** aantallen per periode gesplitst naar herkomst, zodat je ziet of de retouren dalen of stijgen.
 - **Periodetotalen-tabel:** elk totaal met het verschil in % en euro's t.o.v. de periode ervoor — maand-op-maand, kwartaal-op-kwartaal, jaar-op-jaar.
+- **Inhaalweekcorrectie:** een bijna lege betaalweek gevolgd door een dubbele betaalweek wordt als één administratieve inhaalronde herkend. Het werkelijke uitbetaalde bedrag blijft zichtbaar; vergelijkingen gebruiken het gemiddelde van beide weken tegenover de laatste normale referentieweek. Dit werkt door in overzicht, redenen, groepen, herkomst, CSV, PDF en PNG.
 
 **Import & controle**
 - Wat is verwerkt, hersteld of overgeslagen bij de laatste import, plus onbekende redenen met suggesties.
@@ -45,7 +46,7 @@ Bovenin kies je **periode** (week/maand/kwartaal/jaar), **welke** periode, **her
 De app schoont bekende fouten automatisch op en meldt dat in gewone taal bovenin (en volledig in "Import & controle"):
 - **Lege datum** → overgenomen van de regel erboven/eronder (of afgeleid uit weeknummer + jaar).
 - **Leeg week/jaar** → overgenomen van een buurregel.
-- **Leeg bedrag** → overgenomen van de regel erboven/eronder en **gemarkeerd als "controleer"** (een creditbedrag kan per regel uniek zijn, dus de melding vraagt je het te controleren voordat je het rapport naar Wout stuurt). Alleen als er geen bruikbare buurregel is, wordt de regel overgeslagen.
+- **Leeg of ongeldig bedrag** → de regel wordt veilig overgeslagen en met rijnummer gemeld. Een geldbedrag wordt nooit uit een buurregel gegokt; corrigeer de bronregel in Excel en importeer opnieuw.
 - **Fout jaartal** → automatisch gecorrigeerd: `2202 → 2022`, `226 → 2026`, `24 → 2024` (alleen als de uitkomst een geloofwaardig jaar is).
 - **Lege reden** → op "Overige" gezet; **onbekende reden** → met suggestie gemeld.
 
@@ -57,7 +58,7 @@ Alles blijft lokaal in de browser. Klantnaam en ordernummer worden bij import he
 
 ```powershell
 npm run check   # syntax-check
-npm test        # rekenkern + import + privacy + jaarcorrectie + buurregel-herstel + forecast (61 checks)
+npm test        # rekenkern + import + privacy + jaarcorrectie + inhaalweek + forecast (78 checks)
 node tools/render-smoke.cjs   # render-laag + PDF + PNG bouwen zonder crash
 node tools/make-preview.cjs   # (optioneel) preview-pagina's met testdata voor screenshots
 ```
