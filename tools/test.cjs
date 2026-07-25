@@ -361,7 +361,47 @@ ok("ongeldige overboeking boven Retourentotaal wordt geweigerd",
   api.validAdjustmentsForRecords(batchRecords, [{ ...batchAdjustment, amount: 40000 }]).length === 0);
 
 // ---------------------------------------------------------------------------
-console.log("\n13. Privacy: automatisch wissen na 30 min inactiviteit");
+console.log("\n13. Vast correctielogboek over volgende imports");
+ok("correctieregel is actief zolang bronweek aanwezig is",
+  api.adjustmentLedgerStatus(batchAdjustment, batchRecords).key === "active");
+const week31Only = [
+  rec("2026-W31", "2026-07", "Annulering door klant", "Klantenservice", 8000, 21),
+  rec("2026-W31", "2026-07", "Niet werkzaam", "Retouren", 15000, 40),
+];
+ok("correctieregel blijft bewaard als week 30 tijdelijk ontbreekt",
+  api.adjustmentLedgerStatus(batchAdjustment, week31Only).key === "dormant");
+ok("te laag herzien bronbedrag vraagt controle en wordt niet toegepast",
+  api.adjustmentLedgerStatus(batchAdjustment, [
+    rec("2026-W30", "2026-07", "Niet werkzaam", "Retouren", 12000, 30),
+  ]).key === "review");
+const dedupedLedger = api.normalizeAdjustmentList([
+  batchAdjustment,
+  { ...batchAdjustment, amount: 15000, method: "exact" },
+]);
+ok("per bronweek blijft precies één nieuwste correctieregel staan",
+  dedupedLedger.length === 1 && dedupedLedger[0].amount === 15000 && dedupedLedger[0].method === "exact");
+
+resetState([...batchRecords, ...week31Only]);
+api.state.adjustments = [batchAdjustment];
+api.state.selectedKey = "2026-W31";
+const week31Ctx = api.getDashboardContext();
+ok("week 31 blijft buiten de historische correctie",
+  near(week31Ctx.current.total, 23000) && near(week31Ctx.actualCurrent.total, 23000));
+api.clearImportedAnalysis(true);
+ok("privacy-wisactie bewaart het correctielogboek",
+  api.state.records.length === 0 && api.state.adjustments.length === 1
+  && api.state.adjustments[0].currentKey === "2026-W30");
+api.state.records = [...batchRecords, ...week31Only];
+api.state.selectedKey = "2026-W30";
+batchCtx = api.getDashboardContext();
+ok("bewaarde correctie wordt na cumulatieve herimport opnieuw actief",
+  near(batchCtx.current.total, 22957.50) && api.adjustmentLedgerStatus(batchAdjustment, api.state.records).key === "active");
+api.clearImportedAnalysis(false);
+ok("expliciete Reset wist ook het correctielogboek",
+  api.state.records.length === 0 && api.state.adjustments.length === 0);
+
+// ---------------------------------------------------------------------------
+console.log("\n14. Privacy: automatisch wissen na 30 min inactiviteit");
 const NOW = 1000000000000;
 ok("RETENTION_MS = 30 minuten", api.RETENTION_MS === 30 * 60 * 1000, `got ${api.RETENTION_MS}`);
 ok("geen tijdstempel → niet wissen", api.retentionExpired(0, NOW) === false);

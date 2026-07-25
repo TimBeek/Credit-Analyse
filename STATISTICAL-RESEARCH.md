@@ -107,6 +107,10 @@ Besluit voor de app:
 - bied zowel **Operationeel** als **Werkelijk betaald** aan;
 - bewaar het gecombineerde eurototaal exact en toon een reconciliatie voor en
   na de correctie;
+- bewaar een bevestigde correctieregel los van tijdelijke importdata, zodat
+  volgende imports dezelfde historische rapportagebasis gebruiken;
+- verwijder een correctieregel niet wanneer een bronweek tijdelijk ontbreekt,
+  maar markeer hem als bewaard en pas hem opnieuw toe zodra de bron terugkeert;
 - sluit gecorrigeerde perioden uit van procesgrenzen en pauzeer prognoses in de
   werkelijke betaalweergave, omdat die piek administratief is;
 - pas dit alleen handmatig toe wanneer de dubbele batch echt is bevestigd.

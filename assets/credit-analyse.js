@@ -29,7 +29,6 @@
         localStorage.removeItem(STORAGE_KEY);
         localStorage.removeItem(META_KEY);
         localStorage.removeItem(ACTIVE_KEY);
-        localStorage.removeItem(ADJUSTMENT_KEY);
       } else if (!activeAt) {
         localStorage.setItem(ACTIVE_KEY, String(Date.now()));
       }
@@ -834,13 +833,8 @@
   }
 
   function validAdjustmentsForRecords(records, adjustments) {
-    return (adjustments || []).map(normalizeAdjustment).filter(adjustment => {
-      if (!adjustment) return false;
-      const available = records
-        .filter(record => record.weekKey === adjustment.currentKey && record.origin === adjustment.origin)
-        .reduce((sum, record) => sum + Math.max(0, Number(record.amount) || 0), 0);
-      return available > 0 && adjustment.amount <= available + 0.01;
-    });
+    return normalizeAdjustmentList(adjustments)
+      .filter(adjustment => adjustmentLedgerStatus(adjustment, records).key === "active");
   }
 
   // Herverdeelt alleen de geselecteerde Retourenbatch. De bronrecords blijven
@@ -949,17 +943,57 @@
     };
   }
 
+  function normalizeAdjustmentList(values) {
+    const byCurrentWeek = new Map();
+    (values || []).forEach(value => {
+      const adjustment = normalizeAdjustment(value);
+      if (adjustment) byCurrentWeek.set(adjustment.currentKey, adjustment);
+    });
+    return Array.from(byCurrentWeek.values())
+      .sort((a, b) => periodSortValue("week", a.currentKey) - periodSortValue("week", b.currentKey));
+  }
+
+  function adjustmentLedgerStatus(value, records = state.records) {
+    const adjustment = normalizeAdjustment(value);
+    if (!adjustment) {
+      return { key: "invalid", label: "Ongeldig", detail: "Deze correctieregel kan niet worden gelezen." };
+    }
+    const sourceRows = (records || []).filter(record =>
+      record.weekKey === adjustment.currentKey && record.origin === adjustment.origin
+    );
+    if (!sourceRows.length) {
+      return {
+        key: "dormant",
+        label: "Bewaard",
+        detail: `${labelPeriod("week", adjustment.currentKey)} staat niet in de huidige import. De regel wordt automatisch actief zodra die bronweek weer aanwezig is.`,
+      };
+    }
+    const available = sourceRows.reduce((sum, record) => sum + Math.max(0, Number(record.amount) || 0), 0);
+    if (!(available > 0) || adjustment.amount > available + 0.01) {
+      return {
+        key: "review",
+        label: "Controle nodig",
+        detail: `De huidige import bevat ${formatMoneyExact(available)} Retouren in ${labelPeriod("week", adjustment.currentKey)}, minder dan de bewaarde correctie van ${formatMoneyExact(adjustment.amount)}. De regel is niet toegepast.`,
+      };
+    }
+    return {
+      key: "active",
+      label: "Actief",
+      detail: "Automatisch toegepast op de huidige import.",
+    };
+  }
+
   function loadAdjustments() {
     if (!HAS_STORAGE) return [];
     try {
       const values = JSON.parse(localStorage.getItem(ADJUSTMENT_KEY) || "[]");
-      return Array.isArray(values) ? values.map(normalizeAdjustment).filter(Boolean) : [];
+      return Array.isArray(values) ? normalizeAdjustmentList(values) : [];
     } catch { return []; }
   }
 
   function saveAdjustments(adjustments) {
     if (!HAS_STORAGE) return;
-    localStorage.setItem(ADJUSTMENT_KEY, JSON.stringify(adjustments));
+    localStorage.setItem(ADJUSTMENT_KEY, JSON.stringify(normalizeAdjustmentList(adjustments)));
     localStorage.setItem(ACTIVE_KEY, String(Date.now()));
   }
 
@@ -1516,6 +1550,8 @@
     if (q.normalizedReasonRows) fixes.push(`${formatNumber(q.normalizedReasonRows)}× reden opgeschoond`);
     if (q.fallbackReasonRows) fixes.push(`${formatNumber(q.fallbackReasonRows)}× lege reden op "Overige" gezet`);
     if (unknownCount) fixes.push(`${formatNumber(unknownCount)}× onbekende reden (zie controle)`);
+    if (q.reappliedAdjustments) fixes.push(`${formatNumber(q.reappliedAdjustments)}× vaste Retouren-correctie automatisch toegepast`);
+    if (q.dormantAdjustments) fixes.push(`${formatNumber(q.dormantAdjustments)}× correctieregel bewaard; bronweek ontbreekt in deze import`);
     const example = (q.warningSamples || []).find(s => /Jaar .* gecorrigeerd/.test(s.issue))
       || (q.warningSamples || []).find(s => /Datum overgenomen/.test(s.issue))
       || (q.warningSamples || []).find(s => /afgeleid uit weeknummer/.test(s.issue));
@@ -1617,10 +1653,57 @@
     };
   }
 
+  function renderAdjustmentLedger() {
+    const adjustments = normalizeAdjustmentList(state.adjustments).slice().reverse();
+    if (!adjustments.length) {
+      return `
+        <section class="adjustment-ledger" aria-labelledby="adjustmentLedgerTitle">
+          <div class="adjustment-ledger-head">
+            <div>
+              <h3 id="adjustmentLedgerTitle">Vast correctielogboek</h3>
+              <p>Nog geen blijvende correcties opgeslagen.</p>
+            </div>
+          </div>
+        </section>`;
+    }
+    return `
+      <section class="adjustment-ledger" aria-labelledby="adjustmentLedgerTitle">
+        <div class="adjustment-ledger-head">
+          <div>
+            <h3 id="adjustmentLedgerTitle">Vast correctielogboek</h3>
+            <p>Blijft alleen in deze browser staan tot je de regel verwijdert of Reset gebruikt.</p>
+          </div>
+          <strong>${formatNumber(adjustments.length)} ${adjustments.length === 1 ? "correctie" : "correcties"}</strong>
+        </div>
+        <div class="adjustment-ledger-list">
+          ${adjustments.map(adjustment => {
+            const status = adjustmentLedgerStatus(adjustment);
+            return `
+              <div class="adjustment-ledger-row">
+                <div class="adjustment-ledger-main">
+                  <span class="adjustment-ledger-status is-${escapeHtml(status.key)}">${escapeHtml(status.label)}</span>
+                  <strong>${escapeHtml(labelPeriod("week", adjustment.currentKey))} → ${escapeHtml(labelPeriod("week", adjustment.targetKey))}</strong>
+                  <span>${formatMoneyExact(adjustment.amount)} Retouren · ${escapeHtml(adjustment.method === "exact" ? "exact bedrag" : "50/50-schatting")}</span>
+                  <small>${escapeHtml(status.detail)}</small>
+                </div>
+                <button type="button" class="btn btn-ghost" data-remove-adjustment="${escapeHtml(adjustment.currentKey)}">Verwijderen</button>
+              </div>`;
+          }).join("")}
+        </div>
+      </section>`;
+  }
+
   function renderAdjustmentPanel() {
     if (!els.adjustmentPanel) return;
+    const ledger = renderAdjustmentLedger();
+    if (!state.records.length) {
+      els.adjustmentPanel.innerHTML = `
+        <p class="adjustment-empty">De geïmporteerde analyse is gewist. Je correctielogboek staat nog klaar en wordt na de volgende import automatisch gecontroleerd.</p>
+        ${ledger}`;
+      return;
+    }
     if (state.periodType !== "week") {
-      els.adjustmentPanel.innerHTML = `<p class="adjustment-empty">Selecteer bovenaan een week om een Retourenbatch toe te rekenen.</p>`;
+      els.adjustmentPanel.innerHTML = `<p class="adjustment-empty">Selecteer bovenaan een week om een Retourenbatch toe te rekenen.</p>${ledger}`;
       return;
     }
     const selectedKey = state.selectedKey || getAvailablePeriodKeys("week").at(-1) || "";
@@ -1628,21 +1711,16 @@
     const currentKey = related ? related.currentKey : selectedKey;
     const setup = getAdjustmentSetup(currentKey);
     if (!setup.currentKey || !setup.targetKey || !(setup.currentReturns > 0)) {
-      els.adjustmentPanel.innerHTML = `<p class="adjustment-empty">Voor ${escapeHtml(labelPeriod("week", currentKey))} staat geen Retourenbedrag klaar om te verdelen.</p>`;
+      els.adjustmentPanel.innerHTML = `<p class="adjustment-empty">Voor ${escapeHtml(labelPeriod("week", currentKey))} staat geen Retourenbedrag klaar om te verdelen.</p>${ledger}`;
       return;
     }
     const existing = state.adjustments.find(item => item.currentKey === currentKey);
     const method = existing && existing.method === "exact" ? "exact" : "estimate";
     const amount = existing ? existing.amount : setup.suggestedAmount;
     const recon = adjustmentReconciliation(setup, amount);
-    const status = existing ? `
-      <div class="adjustment-status">
-        <strong>Correctie actief · ${escapeHtml(existing.method === "exact" ? "exact bedrag" : "50/50-schatting")}</strong>
-        <span>${formatMoney(existing.amount)} Retouren is operationeel van ${escapeHtml(labelPeriod("week", existing.currentKey))} naar ${escapeHtml(labelPeriod("week", existing.targetKey))} toegerekend.</span>
-      </div>` : "";
     els.adjustmentPanel.innerHTML = `
       <div class="adjustment-layout">
-        ${status}
+        ${ledger}
         <div class="adjustment-recon" aria-label="Aansluiting bijzondere betaalweek">
           <div class="recon-head">Aansluiting</div>
           <div class="recon-head recon-value">${escapeHtml(labelPeriod("week", setup.targetKey))}</div>
@@ -1677,7 +1755,6 @@
           </label>
           <div class="adjustment-actions">
             <button type="submit" class="btn btn-primary">${existing ? "Correctie bijwerken" : "Correctie activeren"}</button>
-            ${existing ? `<button type="button" class="btn btn-ghost" data-remove-adjustment="${escapeHtml(existing.currentKey)}">Verwijderen</button>` : ""}
           </div>
         </form>
         <p class="adjustment-note"><strong>Controle:</strong> beide weken blijven samen ${formatMoney(recon.combined)}. Redenen en aantallen binnen Retouren worden naar verhouding verdeeld, omdat de import de oorspronkelijke week per losse credit niet bevat.</p>
@@ -2999,7 +3076,9 @@
     if (!quality) {
       els.qualityDetails.innerHTML = state.records.length
         ? `<div class="quality-block"><h3>Geen nieuwe importmeldingen</h3><p>Er staat wel analysehistorie klaar. Importeer een vrijdagbestand om de controlelijst te vullen.</p></div>`
-        : `<div class="empty-state">Importeer een Excelbestand om de controlelijst te vullen.</div>`;
+        : state.adjustments.length
+          ? `<div class="quality-block"><h3>Correctielogboek staat klaar</h3><p>De tijdelijke importdata is gewist. Na de volgende import controleert de app de bewaarde correcties automatisch.</p></div>`
+          : `<div class="empty-state">Importeer een Excelbestand om de controlelijst te vullen.</div>`;
       return;
     }
     const unknownCount = Array.from(quality.unknownReasons.values()).reduce((sum, item) => sum + (typeof item === "number" ? item : item.count), 0);
@@ -3019,6 +3098,8 @@
       { label: "Herkomst onbekend", value: quality.missingOrigin || 0, tone: quality.missingOrigin ? "warning" : "" },
       { label: "Mogelijk dubbel", value: quality.possibleDuplicateRows || 0, tone: quality.possibleDuplicateRows ? "warning" : "" },
       { label: "Negatief bedrag", value: quality.negativeAmountRows || 0, tone: quality.negativeAmountRows ? "warning" : "" },
+      { label: "Correcties actief", value: quality.reappliedAdjustments || 0, tone: "" },
+      { label: "Correcties bewaard", value: quality.dormantAdjustments || 0, tone: quality.dormantAdjustments ? "warning" : "" },
     ];
     els.qualityDetails.innerHTML = `
       <div class="quality-block">
@@ -3034,9 +3115,10 @@
 
   function setChrome() {
     const hasData = state.records.length > 0;
+    const hasLedger = state.adjustments.length > 0;
     els.app.classList.toggle("has-data", hasData);
     els.exportCsv.hidden = !hasData;
-    els.clearHistory.hidden = !hasData;
+    els.clearHistory.hidden = !hasData && !hasLedger;
     els.downloadReport.hidden = !hasData;
     if (els.downloadImage) els.downloadImage.hidden = !hasData;
   }
@@ -3047,7 +3129,7 @@
     renderImportBanner();
     renderQualityDetails();
     setChrome();
-    if (!state.records.length && !state.quality) {
+    if (!state.records.length && !state.quality && !state.adjustments.length) {
       els.controlBar.hidden = true;
       if (els.basisBar) els.basisBar.hidden = true;
       els.dashboard.hidden = true;
@@ -3059,6 +3141,7 @@
     renderTabs();
     if (!state.records.length) {
       if (els.basisBar) els.basisBar.hidden = true;
+      renderAdjustmentPanel();
       return;
     }
     renderControls();
@@ -3152,7 +3235,10 @@
     catch { throw new Error("Het bestand kon niet gelezen worden. Controleer of het een geldig Excel- of CSV-bestand is."); }
     const parsed = parseWorkbookRecords(workbook, file.name);
     state.records = mergeImportedRecords(state.records, parsed.records);
-    state.adjustments = validAdjustmentsForRecords(state.records, state.adjustments);
+    state.adjustments = normalizeAdjustmentList(state.adjustments);
+    const activeAdjustments = validAdjustmentsForRecords(state.records, state.adjustments);
+    parsed.quality.reappliedAdjustments = activeAdjustments.length;
+    parsed.quality.dormantAdjustments = state.adjustments.length - activeAdjustments.length;
     state.reasonList = parsed.reasonList;
     state.meta = parsed.meta;
     state.quality = parsed.quality;
@@ -3171,12 +3257,23 @@
     renderDashboard();
   }
 
-  function clearHistory() {
-    if (!state.records.length) return;
-    if (!window.confirm("Alle lokaal bewaarde creditanalyse wissen?")) return;
-    state.records = []; state.meta = null; state.quality = null; state.adjustments = [];
+  function clearImportedAnalysis(preserveAdjustments = true) {
+    const adjustments = preserveAdjustments ? normalizeAdjustmentList(state.adjustments) : [];
+    state.records = [];
+    state.meta = null;
+    state.quality = null;
+    state.adjustments = adjustments;
     state.analysisBasis = "operational";
-    state.selectedKey = ""; state.selectedTrendKey = ""; state.activeTab = "overview"; state.selectedGroupFilter = "";
+    state.selectedKey = "";
+    state.selectedTrendKey = "";
+    state.selectedGroupFilter = "";
+    state.activeTab = adjustments.length ? "control" : "overview";
+  }
+
+  function clearHistory() {
+    if (!state.records.length && !state.adjustments.length) return;
+    if (!window.confirm("Alle lokaal bewaarde creditanalyse én het vaste correctielogboek wissen?")) return;
+    clearImportedAnalysis(false);
     if (HAS_STORAGE) { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem(ACTIVE_KEY); localStorage.removeItem(ADJUSTMENT_KEY); }
     els.dropZone.querySelector("strong").textContent = "Zet hier het vrijdagbestand neer";
     els.dropZone.querySelector("span").textContent = "Sleep het Excel-bestand hierheen of kies het. De app bewaart alleen geaggregeerde cijfers — geen klantnamen of ordernummers.";
@@ -3197,13 +3294,13 @@
   // Wist de analyse automatisch na RETENTION_MS zonder gebruik (privacy).
   function autoWipe() {
     if (!state.records.length) return;
-    state.records = []; state.meta = null; state.quality = null; state.adjustments = [];
-    state.analysisBasis = "operational";
-    state.selectedKey = ""; state.selectedTrendKey = ""; state.selectedGroupFilter = ""; state.activeTab = "overview";
-    if (HAS_STORAGE) { try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem(ACTIVE_KEY); localStorage.removeItem(ADJUSTMENT_KEY); } catch { /* noop */ } }
+    clearImportedAnalysis(true);
+    if (HAS_STORAGE) { try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem(ACTIVE_KEY); } catch { /* noop */ } }
     if (els.dropZone) {
       els.dropZone.querySelector("strong").textContent = "Analyse automatisch gewist";
-      els.dropZone.querySelector("span").textContent = `Na ${RETENTION_LABEL} zonder gebruik is de analyse voor de privacy gewist. Importeer het vrijdagbestand opnieuw om verder te gaan.`;
+      els.dropZone.querySelector("span").textContent = state.adjustments.length
+        ? `Na ${RETENTION_LABEL} zonder gebruik is de importdata voor de privacy gewist. Het vaste correctielogboek blijft lokaal bewaard en wordt na de volgende import opnieuw toegepast.`
+        : `Na ${RETENTION_LABEL} zonder gebruik is de analyse voor de privacy gewist. Importeer het vrijdagbestand opnieuw om verder te gaan.`;
     }
     renderDashboard();
   }
@@ -3975,7 +4072,8 @@
       renderDashboard, generateReportPdf, generateReportImage, exportCurrentCsv, buildPlainConclusion,
       forecastSeries, validateForecast, naiveForecast, selectValidatedForecast,
       getTrendSeries, buildIndividualsControl, findAdministrativeCatchUps,
-      normalizeAdjustment, validAdjustmentsForRecords, applyReturnAdjustments, detectReturnBatchCandidate,
+      normalizeAdjustment, normalizeAdjustmentList, adjustmentLedgerStatus, validAdjustmentsForRecords,
+      applyReturnAdjustments, detectReturnBatchCandidate, clearImportedAnalysis,
       buildParetoRows, buildChangeDrivers, completePeriodKeys, nextPeriodKey, previousPeriodKey, retentionExpired,
       FOCUS_REASONS, REASON_GROUPS, PREVENTABLE_GROUP, RETENTION_MS,
     };

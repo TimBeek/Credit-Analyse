@@ -165,6 +165,16 @@ run("dubbele Retourenbatch rendert ook op werkelijke betaalbasis", () => {
   api.state.activeTab = "overview";
   api.renderDashboard();
 });
+run("vast correctielogboek rendert ook zonder tijdelijke importdata", () => {
+  api.state.records = [];
+  api.state.quality = null;
+  api.state.adjustments = [{
+    currentKey: "2026-W30", targetKey: "2026-W29", origin: "Retouren",
+    amount: 15489.50, method: "estimate", createdAt: new Date().toISOString(),
+  }];
+  api.state.activeTab = "control";
+  api.renderDashboard();
+});
 
 run("buildPlainConclusion levert een leesbare zin", () => {
   api.state.records = data; api.state.adjustments = []; api.state.analysisBasis = "operational";

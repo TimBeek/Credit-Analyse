@@ -206,4 +206,19 @@ app.generateReportImage(app.getDashboardContext(),{mount:document.getElementById
 </body>`);
 fs.writeFileSync(path.join(__dirname, "..", "preview-batch-image.html"), batchImageHtml, "utf8");
 
+const ledgerSeed = `<script>
+try {
+  localStorage.removeItem("remarkt.creditAnalyse.records.v2");
+  localStorage.removeItem("remarkt.creditAnalyse.meta.v2");
+  localStorage.removeItem("remarkt.creditAnalyse.activeAt.v2");
+  localStorage.setItem("remarkt.creditAnalyse.adjustments.v1", ${JSON.stringify(JSON.stringify(batchAdjustment))});
+} catch (e) {}
+</script>
+`;
+const ledgerHtml = cleanIndex.replace(
+  '<script src="assets/xlsx.full.min.js"></script>',
+  ledgerSeed + '<script src="assets/xlsx.full.min.js"></script>',
+);
+fs.writeFileSync(path.join(__dirname, "..", "preview-ledger.html"), ledgerHtml, "utf8");
+
 console.log(`previews geschreven met ${records.length} standaardrecords, ${catchRecords.length} inhaalweekrecords en ${batchRecords.length} Retourenbatch-records`);

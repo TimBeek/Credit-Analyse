@@ -31,6 +31,7 @@ Open daarna: `http://localhost:8091/`
 - **Inhaalweekcorrectie:** een bijna lege betaalweek gevolgd door een dubbele betaalweek wordt als één administratieve inhaalronde herkend. Het werkelijke uitbetaalde bedrag blijft zichtbaar; vergelijkingen gebruiken het gemiddelde van beide weken tegenover de laatste normale referentieweek. Dit werkt door in overzicht, redenen, groepen, herkomst, CSV, PDF en PNG.
 - **Zeldzame dubbele Retourenbatch:** onder **Controle → Bijzondere betaalweek** kan alleen het vertraagde deel uit herkomst *Retouren* aan de oorspronkelijke week worden toegerekend. De app stelt een gelijke verdeling voor, maar accepteert ook een exact bekend bedrag. Klantenservice blijft volledig in de echte betaalweek staan.
 - **Twee rapportageperspectieven:** **Operationeel** toont de weken waarop de Retouren betrekking hebben; **Werkelijk betaald** toont de bank-/betaalstroom. Het gezamenlijke eurototaal verandert nooit en de correctie blijft zichtbaar in dashboard, tabel, CSV, PDF en PNG.
+- **Vast correctielogboek:** een bevestigde correctie blijft in dezelfde browser staan en wordt bij volgende imports automatisch opnieuw toegepast. Een tijdelijk ontbrekende bronweek zet de regel op *Bewaard* in plaats van hem te verwijderen. Alleen **Correctie verwijderen** of **Reset** wist de regel.
 
 **Import & controle**
 - Wat is verwerkt, hersteld of overgeslagen bij de laatste import, plus onbekende redenen met suggesties.
@@ -57,7 +58,7 @@ De app schoont bekende fouten automatisch op en meldt dat in gewone taal bovenin
 
 ## Privacy
 
-Alles blijft lokaal in de browser. Klantnaam en ordernummer worden bij import herkend maar **nooit opgeslagen** — alleen periode, reden, herkomst, bedrag en aantal. De analyse wordt bovendien **na 30 minuten zonder gebruik automatisch gewist**, zodat er geen data blijft staan op een gedeeld apparaat.
+Alles blijft lokaal in de browser. Klantnaam en ordernummer worden bij import herkend maar **nooit opgeslagen** — alleen periode, reden, herkomst, bedrag en aantal. De geïmporteerde analyse wordt **na 30 minuten zonder gebruik automatisch gewist**. Het aparte correctielogboek bevat alleen weeknummers, herkomst, methode en een geaggregeerd bedrag; dit blijft lokaal staan tot de gebruiker de correctie verwijdert of **Reset** kiest.
 
 ## Ontwikkeling / kwaliteit
 
