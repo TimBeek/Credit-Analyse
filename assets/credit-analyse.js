@@ -211,6 +211,8 @@
     focusRow: document.getElementById("focusRow"),
     groupBreakdown: document.getElementById("groupBreakdown"),
     signalBand: document.getElementById("signalBand"),
+    paretoChart: document.getElementById("paretoChart"),
+    changeDrivers: document.getElementById("changeDrivers"),
     compareMeta: document.getElementById("compareMeta"),
     compareTable: document.getElementById("compareTable"),
     trendChart: document.getElementById("trendChart"),
@@ -854,8 +856,8 @@
 
   function getPreviousKey(type, key) {
     const keys = getAvailablePeriodKeys(type);
-    const index = keys.indexOf(key);
-    return index > 0 ? keys[index - 1] : "";
+    const expectedPrevious = previousPeriodKey(type, key);
+    return expectedPrevious && keys.includes(expectedPrevious) ? expectedPrevious : "";
   }
 
   function recordsForPeriod(type, key) {
@@ -946,7 +948,7 @@
     };
   }
 
-  // Gemiddelde + spreiding van het totaalbedrag over alle periodes van dit type.
+  // Basistotalen per periode. Procesgrenzen worden afzonderlijk met I-MR bepaald.
   function getPeriodStats(type) {
     const keys = getAvailablePeriodKeys(type);
     const summaries = keys.map(key => summarizeRecords(recordsForPeriod(type, key)));
@@ -954,9 +956,7 @@
     const counts = summaries.map(summary => summary.count);
     const count = totals.length;
     const avg = count ? totals.reduce((sum, value) => sum + value, 0) / count : 0;
-    const variance = count > 1 ? totals.reduce((sum, value) => sum + ((value - avg) ** 2), 0) / (count - 1) : 0;
-    const stdev = Math.sqrt(variance);
-    return { keys, totals, counts, count, avg, stdev, threshold: avg + (1.5 * stdev) };
+    return { keys, totals, counts, count, avg };
   }
 
   function median(values) {
@@ -966,11 +966,121 @@
     return clean.length % 2 ? clean[middle] : (clean[middle - 1] + clean[middle]) / 2;
   }
 
+  // I-MR-procesgrenzen voor een tijdreeks met een waarneming per periode.
+  // De spreiding komt uit de moving range van direct opeenvolgende, bruikbare
+  // perioden. Een gat of administratieve correctie vormt dus nooit kunstmatig
+  // een grote range. Formele signalering start pas bij 20 meetpunten.
+  function buildIndividualsControl(values, excludedFlags = []) {
+    const eligible = values.map((value, index) => Number.isFinite(value) && !excludedFlags[index]);
+    const clean = values.filter((value, index) => eligible[index]);
+    const center = clean.length ? clean.reduce((sum, value) => sum + value, 0) / clean.length : 0;
+    const movingRanges = [];
+    for (let index = 1; index < values.length; index += 1) {
+      if (eligible[index] && eligible[index - 1]) movingRanges.push(Math.abs(values[index] - values[index - 1]));
+    }
+    const mrAverage = movingRanges.length
+      ? movingRanges.reduce((sum, value) => sum + value, 0) / movingRanges.length
+      : 0;
+    const sigma = mrAverage / 1.128;
+    const available = clean.length >= 20 && movingRanges.length >= 10;
+    const ucl = available ? center + (3 * sigma) : null;
+    const lcl = available ? Math.max(0, center - (3 * sigma)) : null;
+    const pointSignals = values.map((value, index) => Boolean(
+      available && eligible[index] && sigma > 0 && (value > ucl || value < lcl)
+    ));
+
+    const rules = [];
+    if (available) {
+      let side = 0, sideRun = 0;
+      for (let index = 0; index < values.length; index += 1) {
+        if (!eligible[index]) {
+          side = 0;
+          sideRun = 0;
+          continue;
+        }
+        const nextSide = values[index] > center ? 1 : values[index] < center ? -1 : 0;
+        sideRun = nextSide && nextSide === side ? sideRun + 1 : nextSide ? 1 : 0;
+        side = nextSide;
+        if (sideRun === 8) {
+          rules.push({
+            type: "shift",
+            index,
+            direction: side > 0 ? "up" : "down",
+            label: side > 0 ? "8 perioden boven de proceslijn" : "8 perioden onder de proceslijn",
+          });
+        }
+      }
+
+      for (let index = 5; index < values.length; index += 1) {
+        const window = values.slice(index - 5, index + 1);
+        if (!eligible.slice(index - 5, index + 1).every(Boolean)) continue;
+        const rising = window.every((value, j) => j === 0 || value > window[j - 1]);
+        const falling = window.every((value, j) => j === 0 || value < window[j - 1]);
+        if (rising || falling) {
+          rules.push({
+            type: "trend",
+            index,
+            direction: rising ? "up" : "down",
+            label: rising ? "6 perioden achter elkaar stijgend" : "6 perioden achter elkaar dalend",
+          });
+        }
+      }
+    }
+
+    return {
+      available,
+      provisional: available && clean.length < 25,
+      n: clean.length,
+      required: 20,
+      center,
+      mrAverage,
+      sigma,
+      ucl,
+      lcl,
+      pointSignals,
+      signalCount: pointSignals.filter(Boolean).length,
+      rules,
+      latestRule: rules.at(-1) || null,
+    };
+  }
+
+  function findAdministrativeCatchUps(keys, totals) {
+    const pairs = [];
+    for (let index = 1; index < keys.length; index += 1) {
+      if (nextPeriodKey("week", keys[index - 1]) !== keys[index]) continue;
+      const previousTotal = totals[index - 1];
+      const currentTotal = totals[index];
+      if (!(currentTotal > 0)) continue;
+      const baselineValues = totals
+        .filter((_, i) => i !== index && i !== index - 1)
+        .filter(value => value > 0);
+      if (baselineValues.length < 3) continue;
+      const baseline = median(baselineValues);
+      if (!baseline) continue;
+      const normalizedWeekly = (previousTotal + currentTotal) / 2;
+      const previousLow = previousTotal <= baseline * 0.35;
+      const currentHigh = currentTotal >= baseline * 1.45;
+      const plausible = normalizedWeekly >= baseline * 0.65 && normalizedWeekly <= baseline * 1.55;
+      if (previousLow && currentHigh && plausible) {
+        pairs.push({
+          previousKey: keys[index - 1],
+          currentKey: keys[index],
+          previousTotal,
+          currentTotal,
+          normalizedWeekly,
+          baseline,
+        });
+      }
+    }
+    return pairs;
+  }
+
   // Administratieve inhaalweek: als een week bijna niets bevat en de week erna
   // juist veel, beoordelen we de piek met een 2-weeksgemiddelde zonder ruwe data
   // te verplaatsen. Dat past bij retouren die door vakantie pas later betaald zijn.
   function detectCatchUpWeek(ctx) {
     if (ctx.type !== "week" || !ctx.previousKey || !ctx.key) return null;
+    if (nextPeriodKey("week", ctx.previousKey) !== ctx.key) return null;
     const keys = ctx.periodStats.keys;
     const index = keys.indexOf(ctx.key);
     if (index <= 0) return null;
@@ -1064,7 +1174,12 @@
         });
     }
     if (ctx.headline.isOutlier && !ctx.catchUp) {
-      signals.push({ tone: "bad", title: "Valt op t.o.v. normaal", detail: `Het totaal ligt duidelijk boven het gemiddelde van ${formatMoney(ctx.periodStats.avg)} per ${PERIOD_TYPES[ctx.type].label.toLowerCase()}.` });
+      const high = ctx.current.total > ctx.processControl.center;
+      signals.push({
+        tone: high ? "bad" : "good",
+        title: high ? "Boven de procesgrens" : "Onder de procesgrens",
+        detail: `Het totaal ligt buiten de I-MR-procesgrenzen (${formatMoney(ctx.processControl.lcl)} tot ${formatMoney(ctx.processControl.ucl)}). Onderzoek of er een bijzondere oorzaak is.`,
+      });
     }
     return signals.slice(0, 5);
   }
@@ -1080,10 +1195,12 @@
     const decisionDeltaPct = decisionPrevious.total ? (decisionDelta / decisionPrevious.total) * 100 : 0;
     const decisionCountDelta = decisionCurrent.count - decisionPrevious.count;
     const decisionHasPrevious = Boolean(ctx.comparisonPreviousKey);
-    const avg = ctx.periodStats.avg;
+    const process = ctx.processControl || { available: false, n: 0, pointSignals: [] };
+    const avg = process.n ? process.center : ctx.periodStats.avg;
     const vsAvgPct = avg ? ((ctx.current.total - avg) / avg) * 100 : 0;
-    const enoughHistory = ctx.periodStats.count >= 4;
-    const isOutlier = enoughHistory && ctx.periodStats.stdev > 0 && ctx.current.total > ctx.periodStats.threshold;
+    const enoughHistory = process.available;
+    const currentIndex = (ctx.processControlKeys || ctx.periodStats.keys).indexOf(ctx.key);
+    const isOutlier = !ctx.catchUp && currentIndex >= 0 && Boolean(process.pointSignals[currentIndex]);
     const periodWord = PERIOD_TYPES[ctx.type].label.toLowerCase();
     let tone = "flat";
     let title = `Vergelijkbaar met ${PERIOD_TYPES[ctx.type].previousLabel}`;
@@ -1140,13 +1257,16 @@
       current, previous,
       periodStats: getPeriodStats(type),
     };
+    ctx.administrativeCatchUps = type === "week"
+      ? findAdministrativeCatchUps(ctx.periodStats.keys, ctx.periodStats.totals)
+      : [];
     ctx.catchUp = detectCatchUpWeek(ctx);
     ctx.analysisCurrent = current;
     ctx.comparisonPrevious = previous;
     ctx.comparisonPreviousKey = previousKey;
     if (ctx.catchUp) {
-      const currentIndex = ctx.periodStats.keys.indexOf(key);
-      const referenceKey = currentIndex >= 2 ? ctx.periodStats.keys[currentIndex - 2] : "";
+      const expectedReference = previousPeriodKey("week", ctx.catchUp.previousKey);
+      const referenceKey = ctx.periodStats.keys.includes(expectedReference) ? expectedReference : "";
       const reference = summarizeRecords(referenceKey ? recordsForPeriod(type, referenceKey) : []);
       ctx.analysisCurrent = averageSummaries([previous, current]);
       if (referenceKey && reference.total > 0) {
@@ -1160,6 +1280,12 @@
         ctx.comparisonPreviousKey = "";
       }
     }
+    const administrativeKeys = new Set(ctx.administrativeCatchUps.flatMap(pair => [pair.previousKey, pair.currentKey]));
+    const totalByKey = new Map(ctx.periodStats.keys.map((periodKey, index) => [periodKey, ctx.periodStats.totals[index]]));
+    ctx.processControlKeys = completePeriodKeys(type, ctx.periodStats.keys);
+    const processValues = ctx.processControlKeys.map(periodKey => totalByKey.has(periodKey) ? totalByKey.get(periodKey) : null);
+    const processExcluded = ctx.processControlKeys.map(periodKey => administrativeKeys.has(periodKey));
+    ctx.processControl = buildIndividualsControl(processValues, processExcluded);
     ctx.comparison = getReasonComparison(ctx.analysisCurrent, ctx.comparisonPrevious, current);
     ctx.groupComparison = buildGroupComparison(ctx.analysisCurrent, ctx.comparisonPrevious, current);
     ctx.headline = buildHeadline(ctx);
@@ -1306,7 +1432,7 @@
     const avgLine = h.enoughHistory
       ? (ctx.catchUp
         ? `Gecorrigeerd: ${formatMoney(ctx.catchUp.normalizedWeekly)} per week (${ctx.catchUp.referenceKey ? `${formatSignedPercent(ctx.catchUp.normalizedVsReferencePct, 0)} t.o.v. ${escapeHtml(comparisonLabel)}` : `${formatSignedPercent(ctx.catchUp.normalizedVsBaselinePct, 0)} t.o.v. normale weken`})`
-        : `${trendArrow(h.vsAvgPct)} ${formatSignedPercent(h.vsAvgPct, 0)} t.o.v. gemiddeld (${formatMoney(ctx.periodStats.avg)})`)
+        : `${trendArrow(h.vsAvgPct)} ${formatSignedPercent(h.vsAvgPct, 0)} t.o.v. gemiddeld (${formatMoney(ctx.processControl.n ? ctx.processControl.center : ctx.periodStats.avg)})`)
       : `Nog te weinig ${escapeHtml(PERIOD_TYPES[ctx.type].plural)} voor een gemiddelde.`;
 
     const prevLabel = PERIOD_TYPES[ctx.type].previousLabel;
@@ -1567,6 +1693,131 @@
       <p class="group-hint">Klik op een groep om alleen die redenen in de tabel hieronder te zien.</p>`;
   }
 
+  function buildParetoRows(ctx, limit = 8) {
+    const source = ctx.comparison
+      .filter(row => row.currentAmount > 0)
+      .sort((a, b) => b.currentAmount - a.currentAmount);
+    const total = source.reduce((sum, row) => sum + row.currentAmount, 0);
+    let cumulative = 0;
+    const allRows = source.map(row => {
+      const share = total ? (row.currentAmount / total) * 100 : 0;
+      cumulative += share;
+      return {
+        reason: row.reason,
+        amount: row.currentAmount,
+        share,
+        cumulative,
+        groupKey: row.groupKey,
+      };
+    });
+    const countToEighty = allRows.findIndex(row => row.cumulative >= 80) + 1 || allRows.length;
+    if (allRows.length <= limit) return { rows: allRows, total, countToEighty, totalReasons: allRows.length };
+
+    // Laat waar mogelijk alle redenen zien die nodig zijn om de 80%-grens te
+    // bereiken. Bij een zeer vlakke verdeling blijft de lijst begrensd.
+    const visibleCount = Math.min(12, Math.max(1, limit - 1, countToEighty));
+    if (allRows.length <= visibleCount) return { rows: allRows, total, countToEighty, totalReasons: allRows.length };
+    const visible = allRows.slice(0, visibleCount);
+    const rest = allRows.slice(visible.length);
+    const restAmount = rest.reduce((sum, row) => sum + row.amount, 0);
+    const restShare = total ? (restAmount / total) * 100 : 0;
+    visible.push({
+      reason: `Overige ${rest.length} redenen`,
+      amount: restAmount,
+      share: restShare,
+      cumulative: 100,
+      groupKey: "overig",
+    });
+    return { rows: visible, total, countToEighty, totalReasons: allRows.length };
+  }
+
+  function buildChangeDrivers(ctx, limit = 7) {
+    const source = ctx.comparison
+      .filter(row => Math.abs(row.amountDelta) >= 0.5)
+      .sort((a, b) => Math.abs(b.amountDelta) - Math.abs(a.amountDelta));
+    const rows = source.slice(0, limit).map(row => ({
+      reason: row.reason,
+      amountDelta: row.amountDelta,
+      groupKey: row.groupKey,
+    }));
+    if (source.length > limit) {
+      rows.push({
+        reason: `Overige ${source.length - limit} redenen samen`,
+        amountDelta: source.slice(limit).reduce((sum, row) => sum + row.amountDelta, 0),
+        groupKey: "overig",
+      });
+    }
+    return {
+      rows,
+      totalDelta: ctx.headline.decisionHasPrevious ? ctx.headline.decisionDelta : null,
+      maxAbs: Math.max(1, ...rows.map(row => Math.abs(row.amountDelta))),
+    };
+  }
+
+  function renderDecisionAnalysis(ctx) {
+    if (els.paretoChart) {
+      const pareto = buildParetoRows(ctx);
+      if (!pareto.rows.length) {
+        els.paretoChart.innerHTML = `<div class="empty-state">Geen creditbedragen voor deze selectie.</div>`;
+      } else {
+        const maxAmount = Math.max(...pareto.rows.map(row => row.amount), 1);
+        els.paretoChart.innerHTML = `
+          <div class="analysis-summary">
+            <strong>${formatNumber(pareto.countToEighty)} van ${formatNumber(pareto.totalReasons)}</strong>
+            <span>redenen vormen samen minstens 80% van het bedrag</span>
+          </div>
+          <ol class="pareto-list">
+            ${pareto.rows.map(row => `
+              <li>
+                <div class="analysis-label">
+                  <span>${escapeHtml(row.reason)}</span>
+                  <strong>${formatMoney(row.amount)} <small>${formatPercent(row.share, 1)}</small></strong>
+                </div>
+                <div class="pareto-track" aria-label="${escapeHtml(row.reason)}: ${escapeHtml(formatMoney(row.amount))}, cumulatief ${escapeHtml(formatPercent(row.cumulative, 1))}">
+                  <i style="width:${Math.max(1.5, (row.amount / maxAmount) * 100).toFixed(1)}%"></i>
+                  <b style="left:${Math.min(100, row.cumulative).toFixed(1)}%"></b>
+                </div>
+                <span class="cumulative-label">${formatPercent(row.cumulative, 0)} cumulatief</span>
+              </li>`).join("")}
+          </ol>`;
+      }
+    }
+
+    if (els.changeDrivers) {
+      const drivers = buildChangeDrivers(ctx);
+      if (drivers.totalDelta === null) {
+        els.changeDrivers.innerHTML = `<div class="empty-state">Nog geen direct voorafgaande periode om de verandering te verklaren.</div>`;
+      } else if (!drivers.rows.length) {
+        els.changeDrivers.innerHTML = `
+          <div class="analysis-summary is-flat"><strong>${formatMoney(0)}</strong><span>geen materiele verandering per reden</span></div>`;
+      } else {
+        els.changeDrivers.innerHTML = `
+          <div class="analysis-summary ${costTrendClass(drivers.totalDelta)}">
+            <strong>${formatSignedMoney(drivers.totalDelta)}</strong>
+            <span>${ctx.catchUp ? "gecorrigeerd totaalverschil" : `totaalverschil versus ${PERIOD_TYPES[ctx.type].previousLabel}`}</span>
+          </div>
+          <ol class="change-list">
+            ${drivers.rows.map(row => {
+              const pct = Math.min(100, (Math.abs(row.amountDelta) / drivers.maxAbs) * 100);
+              const tone = costTrendClass(row.amountDelta);
+              return `
+                <li>
+                  <div class="analysis-label">
+                    <span>${escapeHtml(row.reason)}</span>
+                    <strong class="${tone}">${trendArrow(row.amountDelta)} ${formatSignedMoney(row.amountDelta)}</strong>
+                  </div>
+                  <div class="change-axis" aria-label="${escapeHtml(row.reason)}: ${escapeHtml(formatSignedMoney(row.amountDelta))}">
+                    <span class="change-half negative">${row.amountDelta < 0 ? `<i style="width:${pct.toFixed(1)}%"></i>` : ""}</span>
+                    <span class="change-zero"></span>
+                    <span class="change-half positive">${row.amountDelta > 0 ? `<i style="width:${pct.toFixed(1)}%"></i>` : ""}</span>
+                  </div>
+                </li>`;
+            }).join("")}
+          </ol>`;
+      }
+    }
+  }
+
   function niceCeil(value) {
     const number = Math.max(1, Number(value || 1));
     const magnitude = 10 ** Math.floor(Math.log10(number));
@@ -1587,11 +1838,72 @@
     return map[state.trendRange] !== undefined ? map[state.trendRange] : Infinity;
   }
 
+  function isoWeeksInYear(year) {
+    return getIsoWeekParts(new Date(Number(year), 11, 28)).week;
+  }
+
   function nextPeriodKey(type, key) {
-    if (type === "week") { const m = key.match(/^(\d{4})-W(\d{2})$/); if (!m) return ""; let y = +m[1], w = +m[2] + 1; if (w > 52) { y += 1; w = 1; } return `${y}-W${pad2(w)}`; }
-    if (type === "month") { const m = key.match(/^(\d{4})-(\d{2})$/); if (!m) return ""; let y = +m[1], mo = +m[2] + 1; if (mo > 12) { y += 1; mo = 1; } return `${y}-${pad2(mo)}`; }
-    if (type === "quarter") { const m = key.match(/^(\d{4})-Q(\d)$/); if (!m) return ""; let y = +m[1], q = +m[2] + 1; if (q > 4) { y += 1; q = 1; } return `${y}-Q${q}`; }
+    if (type === "week") {
+      const m = key.match(/^(\d{4})-W(\d{2})$/);
+      if (!m) return "";
+      let y = Number(m[1]), w = Number(m[2]) + 1;
+      if (w > isoWeeksInYear(y)) { y += 1; w = 1; }
+      return `${y}-W${pad2(w)}`;
+    }
+    if (type === "month") {
+      const m = key.match(/^(\d{4})-(\d{2})$/);
+      if (!m) return "";
+      let y = Number(m[1]), mo = Number(m[2]) + 1;
+      if (mo > 12) { y += 1; mo = 1; }
+      return `${y}-${pad2(mo)}`;
+    }
+    if (type === "quarter") {
+      const m = key.match(/^(\d{4})-Q(\d)$/);
+      if (!m) return "";
+      let y = Number(m[1]), q = Number(m[2]) + 1;
+      if (q > 4) { y += 1; q = 1; }
+      return `${y}-Q${q}`;
+    }
     return String((Number(key) || 0) + 1);
+  }
+
+  function previousPeriodKey(type, key) {
+    if (type === "week") {
+      const m = key.match(/^(\d{4})-W(\d{2})$/);
+      if (!m) return "";
+      let y = Number(m[1]), w = Number(m[2]) - 1;
+      if (w < 1) { y -= 1; w = isoWeeksInYear(y); }
+      return `${y}-W${pad2(w)}`;
+    }
+    if (type === "month") {
+      const m = key.match(/^(\d{4})-(\d{2})$/);
+      if (!m) return "";
+      let y = Number(m[1]), mo = Number(m[2]) - 1;
+      if (mo < 1) { y -= 1; mo = 12; }
+      return `${y}-${pad2(mo)}`;
+    }
+    if (type === "quarter") {
+      const m = key.match(/^(\d{4})-Q(\d)$/);
+      if (!m) return "";
+      let y = Number(m[1]), q = Number(m[2]) - 1;
+      if (q < 1) { y -= 1; q = 4; }
+      return `${y}-Q${q}`;
+    }
+    return String((Number(key) || 0) - 1);
+  }
+
+  function completePeriodKeys(type, availableKeys) {
+    if (!availableKeys.length) return [];
+    const last = availableKeys.at(-1);
+    const result = [availableKeys[0]];
+    let cursor = availableKeys[0];
+    for (let guard = 0; guard < 2000 && cursor !== last; guard += 1) {
+      const next = nextPeriodKey(type, cursor);
+      if (!next || periodSortValue(type, next) <= periodSortValue(type, cursor)) break;
+      result.push(next);
+      cursor = next;
+    }
+    return result;
   }
 
   // Forecast met exponential smoothing (ETS), volgens Hyndman "Forecasting:
@@ -1669,41 +1981,149 @@
       const damp = useTrend ? (best.phi < 1 ? best.phi * (1 - Math.pow(best.phi, hh)) / (1 - best.phi) : hh) : 0;
       const seasVal = useSeasonal ? fit.s[(((n - 1 + hh) % m) + m) % m] : 0;
       const yv = Math.max(0, fit.level + damp * fit.trendV + seasVal);
-      const band = sigma * Math.sqrt(hh);
+      const band = 1.28 * sigma * Math.sqrt(hh);
       preds.push({ idx: n - 1 + hh, y: yv, lo: Math.max(0, yv - band), hi: yv + band });
     }
     const method = useSeasonal ? "Holt-Winters (seizoen + gedempte trend)" : useTrend ? "exponentiële smoothing (gedempte trend)" : "exponentiële smoothing";
     return { preds, excluded, method };
   }
 
+  function validateForecast(values, _outlierFlags, seasonLen) {
+    const n = values.length;
+    if (n < 8) return null;
+    const firstTest = Math.max(6, n - 8);
+    let modelError = 0, benchmarkError = 0, testN = 0;
+    for (let target = firstTest; target < n; target += 1) {
+      const history = values.slice(0, target);
+      // Iedere rolling-origin stap gebruikt alleen informatie die op dat
+      // moment beschikbaar was; zo lekt de latere testperiode niet terug.
+      const prefixControl = buildIndividualsControl(history);
+      const flags = prefixControl.pointSignals;
+      const model = forecastSeries(history, flags, seasonLen, 1);
+      if (!model || !model.preds.length) continue;
+      const seasonalBenchmark = seasonLen > 1 && target >= seasonLen;
+      const benchmark = seasonalBenchmark ? values[target - seasonLen] : values[target - 1];
+      if (!Number.isFinite(benchmark) || !Number.isFinite(values[target])) continue;
+      modelError += Math.abs(values[target] - model.preds[0].y);
+      benchmarkError += Math.abs(values[target] - benchmark);
+      testN += 1;
+    }
+    if (testN < 3) return null;
+    const mae = modelError / testN;
+    const benchmarkMae = benchmarkError / testN;
+    const skill = benchmarkMae > 0 ? 1 - (mae / benchmarkMae) : mae === 0 ? 0 : -1;
+    return { testN, mae, benchmarkMae, skill };
+  }
+
+  function naiveForecast(values, seasonLen, steps) {
+    if (values.length < 2 || steps < 1) return null;
+    const seasonal = seasonLen > 1 && values.length >= 2 * seasonLen;
+    const lag = seasonal ? seasonLen : 1;
+    const errors = [];
+    for (let index = lag; index < values.length; index += 1) {
+      errors.push(values[index] - values[index - lag]);
+    }
+    const sigma = errors.length
+      ? Math.sqrt(errors.reduce((sum, value) => sum + (value * value), 0) / errors.length)
+      : 0;
+    const preds = [];
+    for (let horizon = 1; horizon <= steps; horizon += 1) {
+      const y = seasonal
+        ? values[values.length - seasonLen + ((horizon - 1) % seasonLen)]
+        : values.at(-1);
+      const band = 1.28 * sigma * Math.sqrt(horizon);
+      preds.push({
+        idx: values.length - 1 + horizon,
+        y: Math.max(0, y),
+        lo: Math.max(0, y - band),
+        hi: y + band,
+      });
+    }
+    return {
+      preds,
+      excluded: 0,
+      method: seasonal ? "seizoensnaieve benchmark" : "naieve benchmark (laatste waarde)",
+      benchmark: true,
+    };
+  }
+
+  function selectValidatedForecast(values, outlierFlags, seasonLen, steps) {
+    if (values.length < 8) return null;
+    const validation = validateForecast(values, outlierFlags, seasonLen);
+    const model = forecastSeries(values, outlierFlags, seasonLen, steps);
+    if (!model) return null;
+    const selected = validation && validation.skill < 0
+      ? naiveForecast(values, seasonLen, steps)
+      : model;
+    if (!selected) return null;
+    selected.validation = validation;
+    selected.historyN = values.length;
+    return selected;
+  }
+
   function getTrendSeries(ctx) {
-    const allKeys = ctx.periodStats.keys, totals = ctx.periodStats.totals, counts = ctx.periodStats.counts;
+    const availableKeys = ctx.periodStats.keys;
+    const totals = ctx.periodStats.totals;
+    const counts = ctx.periodStats.counts;
     const metricKey = TREND_METRICS[state.trendMetric] ? state.trendMetric : "total";
-    const valueOf = i => metricKey === "count" ? counts[i] : metricKey === "average" ? (counts[i] ? totals[i] / counts[i] : 0) : totals[i];
-    const allValues = allKeys.map((k, i) => valueOf(i));
+    const valuesByKey = new Map(availableKeys.map((key, index) => {
+      const value = metricKey === "count"
+        ? counts[index]
+        : metricKey === "average"
+          ? (counts[index] ? totals[index] / counts[index] : 0)
+          : totals[index];
+      return [key, value];
+    }));
+    const allKeys = completePeriodKeys(ctx.type, availableKeys);
+    const allValues = allKeys.map(key => valuesByKey.has(key) ? valuesByKey.get(key) : null);
     const N = allValues.length;
 
-    // Statistiek + prognose op de volledige historie, los van het zoombereik.
-    // Een herkende inhaalweek en gemiste betaalronde zijn administratieve
-    // uitzonderingen en vervuilen de normaalzone niet.
-    const administrativeKeys = ctx.catchUp
-      ? new Set([ctx.catchUp.previousKey, ctx.catchUp.currentKey])
-      : new Set();
-    const baselineValues = allValues.filter((_, index) => !administrativeKeys.has(allKeys[index]));
-    const statisticalValues = baselineValues.length >= 3 ? baselineValues : allValues;
-    const statsN = statisticalValues.length;
-    const avg = statsN ? statisticalValues.reduce((a, b) => a + b, 0) / statsN : 0;
-    const variance = statsN > 1 ? statisticalValues.reduce((s, v) => s + (v - avg) ** 2, 0) / (statsN - 1) : 0;
-    const stdev = Math.sqrt(variance);
-    const upper = avg + 1.5 * stdev;
-    const bandLo = Math.max(0, avg - stdev), bandHi = avg + stdev;
-    const allOutliers = allValues.map((v, index) => !administrativeKeys.has(allKeys[index]) && statsN > 4 && stdev > 0 && v > upper);
+    const administrativeKeys = new Set(
+      (ctx.administrativeCatchUps || []).flatMap(pair => [pair.previousKey, pair.currentKey])
+    );
+    const excludedFlags = allKeys.map(key => administrativeKeys.has(key));
+    const control = buildIndividualsControl(allValues, excludedFlags);
+    const allOutliers = control.pointSignals;
+    const statsN = control.n;
+    const avg = control.center;
+    const forecastAdjustedValues = allValues.slice();
+    (ctx.administrativeCatchUps || []).forEach(pair => {
+      const previousIndex = allKeys.indexOf(pair.previousKey);
+      const currentIndex = allKeys.indexOf(pair.currentKey);
+      if (previousIndex < 0 || currentIndex < 0) return;
+      let normalized;
+      if (metricKey === "total") {
+        normalized = pair.normalizedWeekly;
+      } else if (metricKey === "count") {
+        normalized = (counts[availableKeys.indexOf(pair.previousKey)] + counts[availableKeys.indexOf(pair.currentKey)]) / 2;
+      } else {
+        const pi = availableKeys.indexOf(pair.previousKey);
+        const ci = availableKeys.indexOf(pair.currentKey);
+        const combinedCount = counts[pi] + counts[ci];
+        normalized = combinedCount ? (totals[pi] + totals[ci]) / combinedCount : 0;
+      }
+      forecastAdjustedValues[previousIndex] = normalized;
+      forecastAdjustedValues[currentIndex] = normalized;
+    });
+
     let hi = { v: -Infinity, i: 0 }, lo = { v: Infinity, i: 0 };
-    allValues.forEach((v, i) => { if (v > hi.v) hi = { v, i }; if (v < lo.v) lo = { v, i }; });
+    allValues.forEach((value, index) => {
+      if (!Number.isFinite(value)) return;
+      if (value > hi.v) hi = { v: value, i: index };
+      if (value < lo.v) lo = { v: value, i: index };
+    });
+    if (!Number.isFinite(hi.v)) hi = { v: 0, i: 0 };
+    if (!Number.isFinite(lo.v)) lo = { v: 0, i: 0 };
+
     const outCount = allOutliers.filter(Boolean).length;
     const steps = { week: 6, month: 3, quarter: 2, year: 1 }[ctx.type] || 3;
     const seasonLen = { week: 52, month: 12, quarter: 4, year: 0 }[ctx.type] || 0;
-    const forecast = state.forecastOn && !ctx.catchUp ? forecastSeries(allValues, allOutliers, seasonLen, steps) : null;
+    const lastGap = forecastAdjustedValues.reduce((last, value, index) => Number.isFinite(value) ? last : index, -1);
+    const forecastValues = forecastAdjustedValues.slice(lastGap + 1);
+    const forecastFlags = allOutliers.slice(lastGap + 1);
+    const forecast = state.forecastOn && !ctx.catchUp
+      ? selectValidatedForecast(forecastValues, forecastFlags, seasonLen, steps)
+      : null;
 
     // Bereik = alleen de zichtbare zoom (aantal recente periodes in beeld).
     const limit = getTrendRangeLimit();
@@ -1711,17 +2131,25 @@
     const keys = allKeys.slice(start), values = allValues.slice(start), outliers = allOutliers.slice(start);
     const n = values.length;
     if (forecast) forecast.preds.forEach((p, i) => { p.idx = n - 1 + (i + 1); });
-    const maxVal = Math.max(...values, bandHi, forecast ? Math.max(...forecast.preds.map(p => p.hi)) : 0, 1);
+    const finiteValues = values.filter(Number.isFinite);
+    const maxVal = Math.max(
+      ...finiteValues,
+      control.available ? control.ucl : 0,
+      forecast ? Math.max(...forecast.preds.map(p => p.hi)) : 0,
+      1
+    );
+    const missingN = allValues.filter(value => !Number.isFinite(value)).length;
 
     return {
-      metric: TREND_METRICS[metricKey], metricKey, keys, values, n, fullN: N, statsN, avg, stdev, upper, bandLo, bandHi,
-      outliers, forecast, maxVal, outCount,
+      metric: TREND_METRICS[metricKey], metricKey, keys, values, n, fullN: N, observedN: N - missingN, missingN,
+      statsN, avg, stdev: control.sigma, upper: control.ucl, bandLo: control.lcl, bandHi: control.ucl, control,
+      outliers, forecast, forecastHistoryN: forecastValues.length, maxVal, outCount,
       highKey: allKeys[hi.i], highVal: hi.v, lowKey: allKeys[lo.i], lowVal: lo.v,
     };
   }
 
-  // Professionele verloopgrafiek: lijn + vlak, gemiddelde, normaalzone (gem. ±
-  // spreiding), gemarkeerde uitschieters en een stippellijn-prognose.
+  // Professionele tijdreeks: lijn + vlak, I-MR-procesgrenzen, kalendergaten,
+  // bijzondere signalen en een gevalideerde stippellijn-prognose.
   function renderTrendChart(ctx) {
     if (!els.trendChart) return;
     const type = ctx.type, periodWord = PERIOD_TYPES[type].label.toLowerCase();
@@ -1741,18 +2169,47 @@
         <button type="button" class="trend-toggle ${state.forecastOn && !forecastPaused ? "is-active" : ""}" data-forecast aria-pressed="${state.forecastOn && !forecastPaused}" ${forecastPaused ? "disabled aria-disabled=\"true\"" : ""}>Prognose ${forecastPaused ? "gepauzeerd" : state.forecastOn ? "aan" : "uit"}</button>
       </div>`;
 
-    if (!s.n) { els.trendChart.innerHTML = `${toolbar}<div class="empty-state">Geen verloopdata voor dit bereik.</div>`; return; }
+    if (!s.n || !s.observedN) { els.trendChart.innerHTML = `${toolbar}<div class="empty-state">Geen verloopdata voor dit bereik.</div>`; return; }
 
     const outCount = s.outCount;
+    const currentSignal = Boolean(s.control.pointSignals.at(-1));
+    const activeRule = s.control.latestRule && s.control.latestRule.index === s.fullN - 1
+      ? s.control.latestRule
+      : null;
+    const processValue = !s.control.available
+      ? `${formatNumber(s.control.n)}/${formatNumber(s.control.required)}`
+      : currentSignal
+        ? "Actie nodig"
+        : activeRule
+          ? "Verschuiving"
+          : "Stabiel";
+    const processLabel = !s.control.available
+      ? "meetpunten voor I-MR-grenzen"
+      : currentSignal
+        ? "laatste punt buiten procesgrens"
+        : activeRule
+          ? activeRule.label
+          : `${formatNumber(outCount)} grenssignalen in historie`;
+    const validation = fc && fc.validation;
+    const skillPct = validation ? Math.round(validation.skill * 100) : null;
+    const validationLabel = validation
+      ? fc.benchmark
+        ? `ETS ${Math.abs(skillPct)}% slechter; naive methode gekozen`
+        : `${skillPct >= 0 ? "+" : ""}${skillPct}% versus naive benchmark · ${validation.testN} tests`
+      : state.forecastOn
+        ? `minimaal 8 aaneengesloten perioden nodig (${s.forecastHistoryN}/8)`
+        : "prognose en backtest staan uit";
     const statCards = [
-      { label: `${ctx.catchUp ? "Normaal gemiddelde" : "Gemiddeld"} per ${periodWord}`, value: M.axis(s.avg) },
+      { label: s.control.available ? `Proceslijn per ${periodWord}` : `Gemiddeld per ${periodWord}`, value: M.axis(s.avg) },
+      { label: processLabel, value: processValue, alert: currentSignal },
       { label: `Hoogste · ${shortPeriodLabel(type, s.highKey)}`, value: M.axis(s.highVal) },
-      { label: `Laagste · ${shortPeriodLabel(type, s.lowKey)}`, value: M.axis(s.lowVal) },
-      { label: outCount === 1 ? "Uitschieter" : "Uitschieters", value: formatNumber(outCount), alert: outCount > 0 },
-      { label: fc ? `Prognose ${PERIOD_TYPES[type].previousLabel.replace("vorige", "volgende").replace("vorig", "volgend")}` : "Prognose", value: fc ? M.axis(fc.preds[0].y) : "—", accent: true },
+      { label: s.missingN ? "Ontbrekende kalenderperioden" : `Laagste · ${shortPeriodLabel(type, s.lowKey)}`, value: s.missingN ? formatNumber(s.missingN) : M.axis(s.lowVal) },
+      { label: fc ? `Prognose ${PERIOD_TYPES[type].previousLabel.replace("vorige", "volgende").replace("vorig", "volgend")}` : "Prognose", value: fc ? M.axis(fc.preds[0].y) : state.forecastOn ? "Nog niet" : "Uit", accent: true },
+      { label: validationLabel, value: validation ? `MAE ${M.axis(validation.mae)}` : "Backtest", accent: Boolean(validation && !fc.benchmark) },
     ];
     if (forecastPaused) {
-      statCards[statCards.length - 1] = { label: "Prognose gepauzeerd", value: "n.v.t.", accent: true };
+      statCards[4] = { label: "Prognose gepauzeerd", value: "n.v.t.", accent: true };
+      statCards[5] = { label: "Inhaalweek eerst beoordelen", value: "Backtest n.v.t." };
     }
     if (ctx.catchUp && M.label === "Bedrag") {
       statCards.unshift({
@@ -1775,8 +2232,25 @@
     const yTicks = [0, .25, .5, .75, 1].map(f => chartMax * f);
     const labelStep = Math.max(1, Math.ceil(s.n / 12));
 
-    const linePts = s.values.map((v, i) => `${xFor(i).toFixed(1)},${yFor(v).toFixed(1)}`).join(" ");
-    const areaPts = `${left.toFixed(1)},${baseY.toFixed(1)} ${linePts} ${xEnd.toFixed(1)},${baseY.toFixed(1)}`;
+    const segments = [];
+    let segment = [];
+    s.values.forEach((value, index) => {
+      if (Number.isFinite(value)) {
+        segment.push({ value, index });
+      } else if (segment.length) {
+        segments.push(segment);
+        segment = [];
+      }
+    });
+    if (segment.length) segments.push(segment);
+    const trendLines = segments.map(points => {
+      const coords = points.map(point => `${xFor(point.index).toFixed(1)},${yFor(point.value).toFixed(1)}`).join(" ");
+      return `<polyline class="trend-glow" points="${coords}" fill="none"></polyline><polyline class="trend-mainline" points="${coords}" fill="none"></polyline>`;
+    }).join("");
+    const trendAreas = segments.filter(points => points.length > 1).map(points => {
+      const coords = points.map(point => `${xFor(point.index).toFixed(1)},${yFor(point.value).toFixed(1)}`).join(" ");
+      return `<polygon class="trend-area" points="${xFor(points[0].index).toFixed(1)},${baseY.toFixed(1)} ${coords} ${xFor(points.at(-1).index).toFixed(1)},${baseY.toFixed(1)}"></polygon>`;
+    }).join("");
     const selectedIndex = s.keys.indexOf(ctx.key);
     const selectedX = xFor(selectedIndex >= 0 ? selectedIndex : s.n - 1);
     const verticalGuides = s.values.map((_, i) => {
@@ -1798,9 +2272,19 @@
     }
 
     const marks = s.values.map((v, i) => {
-      const x = xFor(i), y = yFor(v);
       const isSel = s.keys[i] === ctx.key, isLatest = s.keys[i] === ctx.latestKey, isOut = s.outliers[i];
       const showLabel = i % labelStep === 0 || isLatest || isSel;
+      const x = xFor(i);
+      if (!Number.isFinite(v)) {
+        return `<g class="pt is-missing" aria-label="${escapeHtml(labelPeriod(type, s.keys[i]))}: geen data">
+          <rect class="pt-hit" x="${(x - pitch / 2).toFixed(1)}" y="${top}" width="${pitch.toFixed(1)}" height="${ch}"></rect>
+          <line class="missing-slot" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${top + 8}" y2="${baseY.toFixed(1)}"></line>
+          <text class="missing-symbol" x="${x.toFixed(1)}" y="${top + 18}" text-anchor="middle">geen data</text>
+          <title>${escapeHtml(labelPeriod(type, s.keys[i]))}: ontbrekende periode, niet als nul behandeld</title>
+          ${showLabel ? `<text class="pt-axis is-missing" x="${x.toFixed(1)}" y="${(height - 48).toFixed(1)}" text-anchor="middle">${escapeHtml(shortPeriodLabel(type, s.keys[i]))}</text>` : ""}
+        </g>`;
+      }
+      const y = yFor(v);
       return `<g class="pt ${isSel ? "is-selected" : ""} ${isLatest ? "is-latest" : ""} ${isOut ? "is-outlier" : ""}" data-period-key="${escapeHtml(s.keys[i])}" tabindex="0" role="button" aria-label="${escapeHtml(labelPeriod(type, s.keys[i]))}: ${escapeHtml(M.fmt(v))}">
         <rect class="pt-hit" x="${(x - pitch / 2).toFixed(1)}" y="${top}" width="${pitch.toFixed(1)}" height="${ch}"></rect>
         <line class="pt-stem" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${baseY.toFixed(1)}" y2="${y.toFixed(1)}"></line>
@@ -1812,20 +2296,26 @@
       </g>`;
     }).join("");
 
-    const showBand = s.statsN > 4 && s.stdev > 0;
-    const baseChartNote = forecastPaused
-      ? `${s.n} van ${s.fullN} ${PERIOD_TYPES[type].plural} in beeld (bereik = alleen de zoom). Gemiddelde en normaalzone zijn berekend over ${s.statsN} normale ${PERIOD_TYPES[type].plural}; de gemiste en ingehaalde betaalweek zijn daarvan uitgesloten.`
-      : `${s.n} van ${s.fullN} ${PERIOD_TYPES[type].plural} in beeld (bereik = alleen de zoom). Gemiddelde, normaalzone${outCount ? `, ${outCount} uitschieter${outCount === 1 ? "" : "s"}` : ""} en prognose zijn berekend over de volledige historie (${s.fullN} ${PERIOD_TYPES[type].plural}).`;
+    const showControl = s.control.available;
+    const observedInView = s.values.filter(Number.isFinite).length;
+    const baseChartNote = `${observedInView} waarnemingen in beeld binnen ${s.n} kalenderperioden. ${s.missingN ? `${s.missingN} ontbrekende periode${s.missingN === 1 ? "" : "n"} blijft als gat zichtbaar en telt niet als nul. ` : ""}`;
+    const processNote = showControl
+      ? `I-MR-procesgrenzen over ${s.control.n} bruikbare meetpunten: ${M.fmt(s.control.lcl)} tot ${M.fmt(s.control.ucl)}${s.control.provisional ? " (voorlopige basis; 25 punten geeft een stabielere schatting)" : ""}.${activeRule ? ` Actueel patroon: ${activeRule.label}.` : ""}`
+      : `Formele I-MR-signalering start bij ${s.control.required} bruikbare meetpunten; beschikbaar: ${s.control.n}.`;
     const forecastNote = forecastPaused
       ? " Prognose is tijdelijk verborgen omdat deze inhaalweek administratief vertekend is; beoordeel deze ronde op het gecorrigeerde 2-weeksgemiddelde."
-      : fc ? ` Prognose: ${fc.method}${fc.excluded ? `, ${fc.excluded} uitschieter(s) gladgestreken` : ""} — de band toont de onzekerheid.` : "";
+      : !state.forecastOn
+        ? " Prognose staat uit."
+        : fc
+          ? ` Prognose: ${fc.method}. Rolling backtest: ${fc.validation ? `${fc.validation.testN} testpunten, MAE ${M.fmt(fc.validation.mae)}, ${fc.benchmark ? "naive benchmark presteerde beter en is daarom gekozen" : `${skillPct >= 0 ? skillPct : Math.abs(skillPct)}% ${skillPct >= 0 ? "beter" : "slechter"} dan naive`}` : "nog te weinig testpunten"}. De band is een 80%-voorspelinterval.`
+          : ` Geen prognose: minimaal 8 aaneengesloten perioden nodig; beschikbaar sinds het laatste datagat: ${s.forecastHistoryN}.`;
 
     els.trendChart.innerHTML = `
       ${toolbar}
       <div class="trend-stats">${statCards.map(c => `<div class="trend-stat ${c.alert ? "alert" : ""} ${c.accent ? "accent" : ""} ${c.catchup ? "catchup" : ""}"><strong>${escapeHtml(c.value)}</strong><span>${escapeHtml(c.label)}</span></div>`).join("")}</div>
       <svg viewBox="0 0 ${width} ${height}" class="trend-svg pro" role="img" aria-labelledby="trendTitle trendDesc">
         <title id="trendTitle">Verloop ${escapeHtml(M.label.toLowerCase())} per ${escapeHtml(periodWord)}</title>
-        <desc id="trendDesc">${escapeHtml(`${s.n} perioden in beeld. Gemiddeld ${M.fmt(s.avg)}. Hoogste ${M.fmt(s.highVal)} in ${labelPeriod(type, s.highKey)}. Laagste ${M.fmt(s.lowVal)} in ${labelPeriod(type, s.lowKey)}.${outCount ? ` ${outCount} uitschieter${outCount === 1 ? "" : "s"}.` : ""}`)}</desc>
+        <desc id="trendDesc">${escapeHtml(`${observedInView} waarnemingen in beeld${s.missingN ? ` en ${s.missingN} ontbrekende kalenderperioden` : ""}. Gemiddeld ${M.fmt(s.avg)}. Hoogste ${M.fmt(s.highVal)} in ${labelPeriod(type, s.highKey)}. Laagste ${M.fmt(s.lowVal)} in ${labelPeriod(type, s.lowKey)}.${outCount ? ` ${outCount} punt${outCount === 1 ? "" : "en"} buiten de I-MR-procesgrenzen.` : ""}`)}</desc>
         <defs>
           <linearGradient id="trendStroke" x1="0" y1="0" x2="1" y2="0">
             <stop offset="0%" stop-color="#3f6f92"></stop>
@@ -1847,16 +2337,16 @@
         </defs>
         <rect class="plot-bg" x="${left}" y="${top}" width="${cw.toFixed(1)}" height="${ch.toFixed(1)}"></rect>
         ${verticalGuides}
-        ${showBand ? `<rect class="band-normal" x="${left.toFixed(1)}" y="${yFor(s.bandHi).toFixed(1)}" width="${(xEnd - left).toFixed(1)}" height="${Math.max(0, yFor(s.bandLo) - yFor(s.bandHi)).toFixed(1)}"></rect>` : ""}
+        ${showControl ? `<rect class="band-control" x="${left.toFixed(1)}" y="${yFor(s.control.ucl).toFixed(1)}" width="${(xEnd - left).toFixed(1)}" height="${Math.max(0, yFor(s.control.lcl) - yFor(s.control.ucl)).toFixed(1)}"></rect>` : ""}
         ${yTicks.map(val => { const y = yFor(val); return `<line class="grid" x1="${left}" x2="${width - right}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"></line><text class="axis-tick" x="${left - 12}" y="${(y + 4).toFixed(1)}" text-anchor="end">${escapeHtml(M.axis(val))}</text>`; }).join("")}
         <line class="avg-line" x1="${left}" x2="${xEnd.toFixed(1)}" y1="${yFor(s.avg).toFixed(1)}" y2="${yFor(s.avg).toFixed(1)}"></line>
-        <text class="avg-label" x="${(xEnd).toFixed(1)}" y="${(yFor(s.avg) - 6).toFixed(1)}" text-anchor="end">gemiddeld</text>
+        <text class="avg-label" x="${(xEnd).toFixed(1)}" y="${(yFor(s.avg) - 6).toFixed(1)}" text-anchor="end">${showControl ? "proceslijn" : "gemiddeld"}</text>
+        ${showControl ? `<line class="control-line upper" x1="${left}" x2="${xEnd.toFixed(1)}" y1="${yFor(s.control.ucl).toFixed(1)}" y2="${yFor(s.control.ucl).toFixed(1)}"></line><text class="control-label-svg upper" x="${xEnd.toFixed(1)}" y="${(yFor(s.control.ucl) - 5).toFixed(1)}" text-anchor="end">bovengrens</text><line class="control-line lower" x1="${left}" x2="${xEnd.toFixed(1)}" y1="${yFor(s.control.lcl).toFixed(1)}" y2="${yFor(s.control.lcl).toFixed(1)}"></line><text class="control-label-svg lower" x="${xEnd.toFixed(1)}" y="${(yFor(s.control.lcl) - 5).toFixed(1)}" text-anchor="end">ondergrens</text>` : ""}
         ${fcArea}
         ${fc ? `<line class="forecast-divider" x1="${xEnd.toFixed(1)}" x2="${xEnd.toFixed(1)}" y1="${top}" y2="${baseY.toFixed(1)}"></line><text class="forecast-label" x="${Math.min(width - right, xEnd + 10).toFixed(1)}" y="${top + 16}" text-anchor="start">prognose</text>` : ""}
-        <polygon class="trend-area" points="${areaPts}"></polygon>
-        <polyline class="trend-glow" points="${linePts}" fill="none"></polyline>
-        <polyline class="trend-mainline" points="${linePts}" fill="none"></polyline>
-        <line class="selection-guide" x1="${selectedX.toFixed(1)}" x2="${selectedX.toFixed(1)}" y1="${top}" y2="${baseY.toFixed(1)}"></line>
+        ${trendAreas}
+        ${trendLines}
+        ${selectedIndex >= 0 ? `<line class="selection-guide" x1="${selectedX.toFixed(1)}" x2="${selectedX.toFixed(1)}" y1="${top}" y2="${baseY.toFixed(1)}"></line>` : ""}
         ${fcLine}
         ${marks}
         ${fcDots}
@@ -1864,26 +2354,34 @@
       </svg>
       <div class="trend-legend">
         <span><i class="lg-line"></i>Verloop ${escapeHtml(M.label.toLowerCase())}</span>
-        <span><i class="lg-band"></i>Normaalzone (gem. ± spreiding)</span>
-        <span><i class="lg-out"></i>Uitschieter</span>
+        ${showControl ? `<span><i class="lg-band"></i>I-MR-procesruimte</span><span><i class="lg-out"></i>Buiten procesgrens</span>` : ""}
+        ${s.missingN ? `<span><i class="lg-gap"></i>Ontbrekende periode</span>` : ""}
         ${fc ? `<span><i class="lg-fc"></i>Prognose</span>` : ""}
       </div>
-      <p class="chart-note">${ctx.catchUp ? `<strong>Inhaalweek:</strong> ${escapeHtml(labelPeriod("week", ctx.catchUp.previousKey))} en ${escapeHtml(labelPeriod("week", ctx.catchUp.currentKey))} samen gemiddeld ${formatMoney(ctx.catchUp.normalizedWeekly)} per week. ` : ""}${escapeHtml(baseChartNote)}${escapeHtml(forecastNote)} <span class="chart-note-hint">Klik een punt om die ${escapeHtml(periodWord)} bovenin te openen.</span></p>`;
+      <p class="chart-note">${ctx.catchUp ? `<strong>Inhaalweek:</strong> ${escapeHtml(labelPeriod("week", ctx.catchUp.previousKey))} en ${escapeHtml(labelPeriod("week", ctx.catchUp.currentKey))} samen gemiddeld ${formatMoney(ctx.catchUp.normalizedWeekly)} per week. ` : ""}${escapeHtml(baseChartNote)} ${escapeHtml(processNote)}${escapeHtml(forecastNote)} <span class="chart-note-hint">Klik een punt om die ${escapeHtml(periodWord)} bovenin te openen.</span></p>`;
   }
 
   // Periodetotalen-tabel: elke periode vs de vorige (maand vs maand, etc.).
   function renderPeriodTotals(ctx) {
     if (!els.periodTotals) return;
     const type = ctx.type;
-    const keys = ctx.periodStats.keys;
+    const availableKeys = ctx.periodStats.keys;
     const totals = ctx.periodStats.totals;
     const counts = ctx.periodStats.counts;
-    if (!keys.length) { els.periodTotals.innerHTML = `<div class="empty-state">Geen periodes beschikbaar.</div>`; return; }
-    const rows = keys.map((key, index) => {
-      const prevTotal = index > 0 ? totals[index - 1] : null;
-      const deltaPct = prevTotal ? ((totals[index] - prevTotal) / prevTotal) * 100 : null;
-      const delta = prevTotal !== null ? totals[index] - prevTotal : null;
-      return { key, total: totals[index], count: counts[index], deltaPct, delta };
+    if (!availableKeys.length) { els.periodTotals.innerHTML = `<div class="empty-state">Geen periodes beschikbaar.</div>`; return; }
+    const totalByKey = new Map(availableKeys.map((key, index) => [key, totals[index]]));
+    const countByKey = new Map(availableKeys.map((key, index) => [key, counts[index]]));
+    const keys = completePeriodKeys(type, availableKeys);
+    const rows = keys.map(key => {
+      const hasData = totalByKey.has(key);
+      const previousKey = previousPeriodKey(type, key);
+      const hasPreviousData = totalByKey.has(previousKey);
+      const total = hasData ? totalByKey.get(key) : null;
+      const count = hasData ? countByKey.get(key) : null;
+      const prevTotal = hasPreviousData ? totalByKey.get(previousKey) : null;
+      const deltaPct = hasData && prevTotal ? ((total - prevTotal) / prevTotal) * 100 : null;
+      const delta = hasData && prevTotal !== null ? total - prevTotal : null;
+      return { key, hasData, total, count, deltaPct, delta };
     }).reverse();
     const maxTotal = Math.max(...totals, 1);
 
@@ -1903,32 +2401,45 @@
         </thead>
         <tbody>
           ${rows.map(row => {
-            const isCatchUpCurrent = Boolean(ctx.catchUp && row.key === ctx.catchUp.currentKey);
-            const isMissedRound = Boolean(ctx.catchUp && row.key === ctx.catchUp.previousKey);
-            const displayDeltaPct = isCatchUpCurrent && ctx.catchUp.referenceKey
+            const administrativePair = (ctx.administrativeCatchUps || []).find(pair => pair.currentKey === row.key || pair.previousKey === row.key);
+            const isCatchUpCurrent = Boolean(administrativePair && row.key === administrativePair.currentKey);
+            const isMissedRound = Boolean(administrativePair && row.key === administrativePair.previousKey);
+            const isActiveCatchUp = Boolean(ctx.catchUp && row.key === ctx.catchUp.currentKey && ctx.catchUp.referenceKey);
+            const displayDeltaPct = isActiveCatchUp
               ? ctx.headline.decisionDeltaPct
-              : isMissedRound ? null : row.deltaPct;
-            const displayDelta = isCatchUpCurrent && ctx.catchUp.referenceKey
+              : isCatchUpCurrent || isMissedRound ? null : row.deltaPct;
+            const displayDelta = isActiveCatchUp
               ? ctx.headline.decisionDelta
-              : isMissedRound ? null : row.delta;
-            const catchUpPill = ctx.catchUp && row.key === ctx.catchUp.currentKey
+              : isCatchUpCurrent || isMissedRound ? null : row.delta;
+            const catchUpPill = isCatchUpCurrent
               ? ` <span class="pill pill-catchup">inhaalweek</span>`
-              : ctx.catchUp && row.key === ctx.catchUp.previousKey
+              : isMissedRound
                 ? ` <span class="pill pill-muted">gemiste ronde</span>`
                 : "";
+            if (!row.hasData) {
+              return `
+              <tr class="row-missing">
+                <th scope="row"><strong>${escapeHtml(labelPeriod(type, row.key))}</strong> <span class="pill pill-muted">ontbreekt</span></th>
+                <td class="num muted">—</td>
+                <td class="num muted">—</td>
+                <td class="num muted">—</td>
+                <td class="num muted">—</td>
+                <td class="bar-col"><span class="missing-bar">geen data</span></td>
+              </tr>`;
+            }
             return `
             <tr class="${row.key === ctx.key ? "row-selected" : ""} ${row.key === ctx.latestKey ? "row-latest" : ""}" data-period-key="${escapeHtml(row.key)}">
               <th scope="row"><button type="button" class="period-link" data-period-key="${escapeHtml(row.key)}"><strong>${escapeHtml(labelPeriod(type, row.key))}</strong>${row.key === ctx.latestKey ? ` <span class="pill pill-latest">Nieuwste</span>` : ""}${catchUpPill}</button></th>
               <td class="num strong">${formatMoney(row.total)}</td>
               <td class="num">${formatNumber(row.count)}</td>
-              <td class="num ${displayDeltaPct === null ? "muted" : costTrendClass(displayDeltaPct)}">${displayDeltaPct === null ? "—" : `${trendArrow(displayDeltaPct)} ${formatSignedPercent(displayDeltaPct, 1)}${isCatchUpCurrent ? ` gecorr. vs ${escapeHtml(shortPeriodLabel(type, ctx.catchUp.referenceKey))}` : ""}`}</td>
+              <td class="num ${displayDeltaPct === null ? "muted" : costTrendClass(displayDeltaPct)}">${displayDeltaPct === null ? "—" : `${trendArrow(displayDeltaPct)} ${formatSignedPercent(displayDeltaPct, 1)}${isActiveCatchUp ? ` gecorr. vs ${escapeHtml(shortPeriodLabel(type, ctx.catchUp.referenceKey))}` : ""}`}</td>
               <td class="num ${displayDelta === null ? "muted" : costTrendClass(displayDelta)}">${displayDelta === null ? "—" : formatSignedMoney(displayDelta)}</td>
               <td class="bar-col"><span class="cell-bar"><i class="neutral" style="width:${Math.max(2, (row.total / maxTotal) * 100)}%"></i></span></td>
             </tr>`;
           }).join("")}
         </tbody>
       </table>
-      <p class="table-note">${ctx.catchUp && ctx.catchUp.referenceKey ? `De inhaalweek gebruikt het gecorrigeerde tweeweeksgemiddelde tegenover ${escapeHtml(labelPeriod(type, ctx.catchUp.referenceKey))}; overige rijen vergelijken met de direct voorgaande periode. ` : ""}Klik een rij om die ${escapeHtml(PERIOD_TYPES[type].label.toLowerCase())} bovenin te openen.</p>`;
+      <p class="table-note">${ctx.catchUp && ctx.catchUp.referenceKey ? `De inhaalweek gebruikt het gecorrigeerde tweeweeksgemiddelde tegenover ${escapeHtml(labelPeriod(type, ctx.catchUp.referenceKey))}. ` : ""}Een ontbrekende kalenderperiode blijft leeg en verbreekt de vergelijking; deze wordt nooit als nul ingevuld. Klik een rij met data om die ${escapeHtml(PERIOD_TYPES[type].label.toLowerCase())} bovenin te openen.</p>`;
   }
 
   // Aantallen per herkomst (Klantenservice vs Retouren) over tijd.
@@ -1942,8 +2453,9 @@
       if (r.origin === "Retouren") { e.retCount += r.count; e.retAmt += r.amount; } else { e.ksCount += r.count; e.ksAmt += r.amount; }
       map.set(key, e);
     });
-    const keys = Array.from(map.keys()).sort((a, b) => periodSortValue(type, a) - periodSortValue(type, b));
-    return { keys, rows: keys.map(k => map.get(k)) };
+    const availableKeys = Array.from(map.keys()).sort((a, b) => periodSortValue(type, a) - periodSortValue(type, b));
+    const keys = completePeriodKeys(type, availableKeys);
+    return { keys, rows: keys.map(key => map.get(key) || null), availableKeys };
   }
 
   // Analyse: dalen of stijgen de retouren t.o.v. klantenservice? Twee lijnen (aantallen).
@@ -1988,17 +2500,28 @@
     const viewKeys = hs.keys.slice(start, start + viewCount);
     const viewRows = hs.rows.slice(start, start + viewCount);
     const chart = (() => {
-      if (viewRows.length < 2) return "";
+      const observedRows = viewRows.filter(Boolean);
+      if (observedRows.length < 2) return "";
       const width = 1000, height = 286, left = 66, right = 30, top = 26, bottom = 50;
       const cw = width - left - right, ch = height - top - bottom;
-      const maxVal = niceCeil(Math.max(1, ...viewRows.map(row => Math.max(row.retCount, row.ksCount))));
+      const maxVal = niceCeil(Math.max(1, ...observedRows.map(row => Math.max(row.retCount, row.ksCount))));
       const baseY = top + ch;
       const maxIdx = Math.max(1, viewRows.length - 1);
       const xFor = i => left + (i / maxIdx) * cw;
       const yFor = v => top + ch - (Math.max(0, v) / maxVal) * ch;
       const labelStep = Math.max(1, Math.ceil(viewRows.length / 8));
-      const retPts = viewRows.map((row, i) => `${xFor(i).toFixed(1)},${yFor(row.retCount).toFixed(1)}`).join(" ");
-      const ksPts = viewRows.map((row, i) => `${xFor(i).toFixed(1)},${yFor(row.ksCount).toFixed(1)}`).join(" ");
+      const seriesSegments = field => {
+        const result = [];
+        let current = [];
+        viewRows.forEach((row, index) => {
+          if (row) current.push(`${xFor(index).toFixed(1)},${yFor(row[field]).toFixed(1)}`);
+          else if (current.length) { result.push(current); current = []; }
+        });
+        if (current.length) result.push(current);
+        return result;
+      };
+      const retLines = seriesSegments("retCount").map(points => `<polyline class="os-line ret" points="${points.join(" ")}" fill="none"></polyline>`).join("");
+      const ksLines = seriesSegments("ksCount").map(points => `<polyline class="os-line ks" points="${points.join(" ")}" fill="none"></polyline>`).join("");
       const selectedLocal = idx - start;
       const selectedGuide = selectedLocal >= 0 && selectedLocal < viewRows.length
         ? `<line class="selection-guide" x1="${xFor(selectedLocal).toFixed(1)}" x2="${xFor(selectedLocal).toFixed(1)}" y1="${top}" y2="${baseY.toFixed(1)}"></line>`
@@ -2013,6 +2536,12 @@
         const key = viewKeys[i];
         const isSel = i === selectedLocal;
         const x = xFor(i);
+        if (!row) {
+          return `<g class="os-point is-missing" aria-label="${escapeHtml(labelPeriod(type, key))}: geen data">
+            <line class="missing-slot" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${top + 8}" y2="${baseY.toFixed(1)}"></line>
+            <title>${escapeHtml(labelPeriod(type, key))}: ontbrekende periode</title>
+          </g>`;
+        }
         return `
           <g class="os-point ${isSel ? "is-selected" : ""}" data-period-key="${escapeHtml(key)}" tabindex="0" role="button" aria-label="${escapeHtml(`${labelPeriod(type, key)}: Retouren ${formatNumber(row.retCount)}, Klantenservice ${formatNumber(row.ksCount)}`)}">
             <line class="pt-stem" x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${baseY.toFixed(1)}" y2="${yFor(Math.max(row.retCount, row.ksCount)).toFixed(1)}"></line>
@@ -2020,10 +2549,12 @@
             <circle class="os-dot ks ${isSel ? "is-selected" : ""}" cx="${x.toFixed(1)}" cy="${yFor(row.ksCount).toFixed(1)}" r="${isSel ? 5 : 3.6}"><title>Klantenservice ${escapeHtml(labelPeriod(type, key))}: ${formatNumber(row.ksCount)}</title></circle>
           </g>`;
       }).join("");
+      const lastObservedIndex = viewRows.reduce((last, row, index) => row ? index : last, -1);
+      const lastObserved = lastObservedIndex >= 0 ? viewRows[lastObservedIndex] : null;
       return `
         <svg viewBox="0 0 ${width} ${height}" class="trend-svg origin-svg" role="img" aria-labelledby="originTitle originDesc">
           <title id="originTitle">Trend herkomst per ${escapeHtml(periodWord)}</title>
-          <desc id="originDesc">${escapeHtml(`Retouren en Klantenservice over ${viewRows.length} ${PERIOD_TYPES[type].plural}. Geselecteerd: ${labelPeriod(type, hs.keys[idx])}, ${formatNumber(cur.retCount)} retourcredits en ${formatNumber(cur.ksCount)} klantenservicecredits.`)}</desc>
+          <desc id="originDesc">${escapeHtml(`Retouren en Klantenservice over ${observedRows.length} waarnemingen binnen ${viewRows.length} kalenderperioden. Geselecteerd: ${labelPeriod(type, hs.keys[idx])}, ${formatNumber(cur.retCount)} retourcredits en ${formatNumber(cur.ksCount)} klantenservicecredits.`)}</desc>
           <defs>
             <linearGradient id="originKs" x1="0" y1="0" x2="1" y2="0">
               <stop offset="0%" stop-color="#3f6f92"></stop><stop offset="100%" stop-color="#6a97b6"></stop>
@@ -2039,14 +2570,11 @@
           <rect class="plot-bg" x="${left}" y="${top}" width="${cw.toFixed(1)}" height="${ch.toFixed(1)}"></rect>
           ${yTicks.map(val => { const y = yFor(val); return `<line class="grid" x1="${left}" x2="${width - right}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}"></line><text class="axis-tick" x="${left - 10}" y="${(y + 4).toFixed(1)}" text-anchor="end">${formatNumber(Math.round(val))}</text>`; }).join("")}
           ${selectedGuide}
-          <polyline class="os-line ret os-glow" points="${retPts}" fill="none"></polyline>
-          <polyline class="os-line ks os-glow" points="${ksPts}" fill="none"></polyline>
-          <polyline class="os-line ret" points="${retPts}" fill="none"></polyline>
-          <polyline class="os-line ks" points="${ksPts}" fill="none"></polyline>
+          ${retLines}
+          ${ksLines}
           ${dots}
           ${xLabels}
-          <text class="os-end ret" x="${(width - right).toFixed(1)}" y="${Math.max(top + 12, yFor(viewRows[viewRows.length - 1].retCount) - 8).toFixed(1)}" text-anchor="end">Retouren</text>
-          <text class="os-end ks" x="${(width - right).toFixed(1)}" y="${Math.min(baseY - 8, yFor(viewRows[viewRows.length - 1].ksCount) + 16).toFixed(1)}" text-anchor="end">Klantenservice</text>
+          ${lastObserved ? `<text class="os-end ret" x="${xFor(lastObservedIndex).toFixed(1)}" y="${Math.max(top + 12, yFor(lastObserved.retCount) - 8).toFixed(1)}" text-anchor="end">Retouren</text><text class="os-end ks" x="${xFor(lastObservedIndex).toFixed(1)}" y="${Math.min(baseY - 8, yFor(lastObserved.ksCount) + 16).toFixed(1)}" text-anchor="end">Klantenservice</text>` : ""}
         </svg>
         <div class="trend-legend origin-legend">
           <span><i class="lg-line lg-ret"></i>Retouren</span>
@@ -2063,7 +2591,7 @@
         <div class="split-seg ret" style="flex:${Math.max(retShare, 3)}">${retShare >= 12 ? `<span>Retouren ${formatPercent(retShare, 0)}</span>` : ""}</div>
         <div class="split-seg ks" style="flex:${Math.max(100 - retShare, 3)}">${(100 - retShare) >= 12 ? `<span>Klantenservice ${formatPercent(100 - retShare, 0)}</span>` : ""}</div>
       </div>
-      <p class="chart-note">Aantallen en bedragen per herkomst, deze ${escapeHtml(periodWord)} vergeleken met ${escapeHtml(referenceText)}.${ctx.catchUp ? " Verschillen gebruiken het gecorrigeerde tweeweeksgemiddelde." : ""}</p>`;
+      <p class="chart-note">Aantallen en bedragen per herkomst, deze ${escapeHtml(periodWord)} vergeleken met ${escapeHtml(referenceText)}.${viewRows.some(row => !row) ? " Ontbrekende perioden zijn als gaten weergegeven." : ""}${ctx.catchUp ? " Verschillen gebruiken het gecorrigeerde tweeweeksgemiddelde." : ""}</p>`;
   }
 
   function renderIssueList(title, items, emptyText) {
@@ -2157,6 +2685,7 @@
     renderFocusRow(ctx);
     renderGroupBreakdown(ctx);
     renderSignals(ctx);
+    renderDecisionAnalysis(ctx);
     renderCompareTable(ctx);
     renderTrendChart(ctx);
     renderOriginSplit(ctx);
@@ -2418,6 +2947,41 @@
     });
     y += 3;
 
+    // Pareto and absolute change drivers
+    const pareto = buildParetoRows(ctx, 7);
+    const drivers = buildChangeDrivers(ctx, 6);
+    sectionTitle("Kostendrijvers — Pareto en verandering");
+    font("normal", 8); set(MUT);
+    const paretoNote = doc.splitTextToSize(`${pareto.countToEighty} van ${pareto.totalReasons} redenen vormen samen minstens 80% van het uitbetaalde bedrag. % totaal is creditmix, geen retourpercentage van alle verkopen.`, CW);
+    doc.text(paretoNote, M, y);
+    y += paretoNote.length * 3.5 + 3;
+    cols([
+      { text: "Pareto op werkelijk bedrag", x: M, bold: true, color: MUT, size: 8 },
+      { text: "Bedrag", x: 126, align: "right", bold: true, color: MUT, size: 8 },
+      { text: "% totaal", x: 158, align: "right", bold: true, color: MUT, size: 8 },
+      { text: "cumulatief", x: RIGHT, align: "right", bold: true, color: MUT, size: 8 },
+    ]);
+    pareto.rows.forEach(row => {
+      cols([
+        { text: row.reason, x: M, maxWidth: 92, size: 8.5 },
+        { text: formatMoney(row.amount), x: 126, align: "right", size: 8.5 },
+        { text: formatPercent(row.share, 1), x: 158, align: "right", size: 8.5 },
+        { text: formatPercent(row.cumulative, 0), x: RIGHT, align: "right", color: row.cumulative >= 80 ? BAD : MUT, size: 8.5 },
+      ]);
+    });
+    y += 2;
+    cols([
+      { text: "Grootste bijdragen aan het verschil", x: M, bold: true, color: MUT, size: 8 },
+      { text: h.decisionHasPrevious ? formatSignedMoney(drivers.totalDelta) : "geen referentie", x: RIGHT, align: "right", bold: true, color: h.decisionHasPrevious ? costColor(drivers.totalDelta) : MUT, size: 8 },
+    ]);
+    drivers.rows.forEach(row => {
+      cols([
+        { text: row.reason, x: M, maxWidth: 130, size: 8.5 },
+        { text: formatSignedMoney(row.amountDelta), x: RIGHT, align: "right", color: costColor(row.amountDelta), size: 8.5, bold: true },
+      ]);
+    });
+    y += 4;
+
     // Compare table
     const compareRows = ctx.comparison.filter(r => r.currentAmount > 0 || r.previousAmount > 0).sort((a, b) => b.currentAmount - a.currentAmount).slice(0, 18);
     sectionTitle(`Alle redenen — ${periodLabel} vs ${previousLabel}`);
@@ -2470,29 +3034,52 @@
     y += 4;
 
     // Trend chart
-    const trendKeys = ctx.periodStats.keys.slice(-Math.min(12, PERIOD_TYPES[ctx.type].pickLimit));
-    const trendTotals = trendKeys.map(key => ctx.periodStats.totals[ctx.periodStats.keys.indexOf(key)] || 0);
-    if (trendKeys.length) {
+    const completeTrendKeys = completePeriodKeys(ctx.type, ctx.periodStats.keys);
+    const trendKeys = completeTrendKeys.slice(-Math.min(12, PERIOD_TYPES[ctx.type].pickLimit));
+    const trendTotals = trendKeys.map(key => {
+      const index = ctx.periodStats.keys.indexOf(key);
+      return index >= 0 ? ctx.periodStats.totals[index] : null;
+    });
+    const finiteTrendTotals = trendTotals.filter(Number.isFinite);
+    if (finiteTrendTotals.length) {
       sectionTitle(`Verloop laatste ${trendKeys.length} ${PERIOD_TYPES[ctx.type].plural}`);
       const chartX = M, chartY = y, chartW = CW, chartH = 32;
-      const chartMax = Math.max(...trendTotals, 1);
+      const chartMax = Math.max(...finiteTrendTotals, ctx.processControl.available ? ctx.processControl.ucl : 0, 1);
       const barGap = 3, barW = (chartW - barGap * (trendKeys.length - 1)) / trendKeys.length;
-      const avgY = chartY + chartH - ((ctx.periodStats.avg / chartMax) * chartH);
+      const avgY = chartY + chartH - ((ctx.processControl.center / chartMax) * chartH);
       doc.setDrawColor(LINE[0], LINE[1], LINE[2]); doc.setLineWidth(0.2); doc.roundedRect(chartX, chartY, chartW, chartH, 1.5, 1.5);
-      doc.setDrawColor(GOOD[0], GOOD[1], GOOD[2]); doc.setLineWidth(0.4); doc.setLineDashPattern([2, 2], 0);
+      doc.setDrawColor(DATA[0], DATA[1], DATA[2]); doc.setLineWidth(0.4); doc.setLineDashPattern([2, 2], 0);
       doc.line(chartX + 2, avgY, chartX + chartW - 2, avgY); doc.setLineDashPattern([], 0);
+      if (ctx.processControl.available) {
+        const uclY = chartY + chartH - ((ctx.processControl.ucl / chartMax) * chartH);
+        const lclY = chartY + chartH - ((ctx.processControl.lcl / chartMax) * chartH);
+        doc.setDrawColor(BAD[0], BAD[1], BAD[2]); doc.setLineDashPattern([1, 2], 0);
+        doc.line(chartX + 2, uclY, chartX + chartW - 2, uclY);
+        doc.setDrawColor(GOOD[0], GOOD[1], GOOD[2]);
+        doc.line(chartX + 2, lclY, chartX + chartW - 2, lclY);
+        doc.setLineDashPattern([], 0);
+      }
       trendKeys.forEach((key, index) => {
         const x = chartX + index * (barW + barGap);
-        const barH = Math.max(1.5, (trendTotals[index] / chartMax) * (chartH - 7));
+        const value = trendTotals[index];
         const isCurrent = key === ctx.key;
-        const fill = isCurrent ? BAD : DATA;
-        doc.setFillColor(fill[0], fill[1], fill[2]);
-        doc.roundedRect(x + 1, chartY + chartH - barH - 5, Math.max(1, barW - 2), barH, 0.8, 0.8, "F");
+        if (Number.isFinite(value)) {
+          const barH = Math.max(1.5, (value / chartMax) * (chartH - 7));
+          const fill = isCurrent ? BAD : DATA;
+          doc.setFillColor(fill[0], fill[1], fill[2]);
+          doc.roundedRect(x + 1, chartY + chartH - barH - 5, Math.max(1, barW - 2), barH, 0.8, 0.8, "F");
+        } else {
+          doc.setDrawColor(MUT[0], MUT[1], MUT[2]); doc.setLineDashPattern([1, 1], 0);
+          doc.line(x + (barW / 2), chartY + 4, x + (barW / 2), chartY + chartH - 5);
+          doc.setLineDashPattern([], 0);
+        }
         font(isCurrent ? "bold" : "normal", 7); set(isCurrent ? BAD : MUT);
         doc.text(shortPeriodLabel(ctx.type, key), x + (barW / 2), chartY + chartH - 1.5, { align: "center" });
       });
       font("normal", 7.5); set(MUT);
-      doc.text(`Streeplijn = gemiddeld ${formatMoney(ctx.periodStats.avg)}`, chartX, chartY + chartH + 5);
+      doc.text(ctx.processControl.available
+        ? `Proceslijn ${formatMoney(ctx.processControl.center)} · I-MR ${formatMoney(ctx.processControl.lcl)} tot ${formatMoney(ctx.processControl.ucl)}`
+        : `Gemiddeld ${formatMoney(ctx.processControl.center)} · I-MR start bij 20 meetpunten (${ctx.processControl.n}/20)`, chartX, chartY + chartH + 5);
       y += chartH + 12;
     }
 
@@ -2569,6 +3156,8 @@
     const rows = ctx.comparison.filter(r => r.currentAmount > 0 || r.previousAmount > 0).sort((a, b) => b.currentAmount - a.currentAmount);
     const shownRows = rows.slice(0, 15);
     const restCount = rows.length - shownRows.length;
+    const pareto = buildParetoRows(ctx, 8);
+    const drivers = buildChangeDrivers(ctx, 4);
 
     // Conclusiezin vooraf opmeten voor de hoogte.
     setFont("400", 15);
@@ -2582,7 +3171,12 @@
     const compBarH = 26;
     const tilesY = compBarY + compBarH + 18;
     const tileH = 74;
-    const tableTitleY = tilesY + tileH + 36;
+    const driverTitleY = tilesY + tileH + 36;
+    const driverSummaryY = driverTitleY + 23;
+    const driverRowsY = driverSummaryY + 18;
+    const driverRowH = 27;
+    const driverBlockH = Math.max(1, drivers.rows.length) * driverRowH;
+    const tableTitleY = driverRowsY + driverBlockH + 32;
     const tableHeadY = tableTitleY + 24;
     const rowsStartY = tableHeadY + 12;
     const tableRows = shownRows.length + (restCount > 0 ? 1 : 0) + 1;
@@ -2649,7 +3243,39 @@
       text(`${formatPercent(g.share, 1)} van totaal`, x + 14, tilesY + 66, { size: 11.5, color: FAINT });
     });
 
-    // ---- Blok 3: alle redenen ----
+    // ---- Blok 3: grootste kostendrijvers ----
+    text("Grootste kostendrijvers", P, driverTitleY, { size: 17, weight: "700" });
+    const paretoSummary = pareto.totalReasons
+      ? `${formatNumber(pareto.countToEighty)} van ${formatNumber(pareto.totalReasons)} redenen vormen samen minimaal 80% van het bedrag.`
+      : "Nog geen redenen beschikbaar voor een Pareto-analyse.";
+    text(paretoSummary, P, driverSummaryY, { size: 12.5, color: MUT });
+    if (!drivers.rows.length) {
+      text("Nog geen vergelijkbare vorige periode.", P, driverRowsY + 18, { size: 13, color: FAINT });
+    } else {
+      const driverBarX = 430;
+      const driverBarW = 420;
+      const driverMid = driverBarX + driverBarW / 2;
+      drivers.rows.forEach((row, index) => {
+        const y = driverRowsY + index * driverRowH;
+        const barW = drivers.maxAbs ? (Math.abs(row.amountDelta) / drivers.maxAbs) * (driverBarW / 2) : 0;
+        text(row.reason, P, y + 17, { size: 12.5, weight: "600", maxW: 355 });
+        c.strokeStyle = LINE2;
+        c.lineWidth = 1;
+        c.beginPath();
+        c.moveTo(driverMid, y + 14);
+        c.lineTo(driverMid, y + 24);
+        c.stroke();
+        c.fillStyle = row.amountDelta > 0 ? UP : DOWN;
+        const x = row.amountDelta >= 0 ? driverMid : driverMid - barW;
+        rrect(x, y + 8, Math.max(2, barW), 10, 3);
+        c.fill();
+        text(formatSignedMoney(row.amountDelta), RIGHT, y + 18, {
+          size: 12.5, weight: "700", color: costColor(row.amountDelta), align: "right",
+        });
+      });
+    }
+
+    // ---- Blok 4: alle redenen ----
     text(`Alle redenen — vs ${previousLabel}`, P, tableTitleY, { size: 17, weight: "700" });
     const colBedrag = 596, colShare = 716, colDelta = 856, colDeltaE = RIGHT;
     text("Reden", P, tableHeadY, { size: 11.5, weight: "700", color: MUT });
@@ -2852,7 +3478,9 @@
       getDashboardContext, buildHeadline, focusStats, reasonGroupKey, makePeriodKeys,
       parseMoney, parseDateValue, correctYearNumber, labelPeriod, periodSortValue,
       renderDashboard, generateReportPdf, generateReportImage, exportCurrentCsv, buildPlainConclusion,
-      forecastSeries, getTrendSeries, nextPeriodKey, retentionExpired,
+      forecastSeries, validateForecast, naiveForecast, selectValidatedForecast,
+      getTrendSeries, buildIndividualsControl, findAdministrativeCatchUps,
+      buildParetoRows, buildChangeDrivers, completePeriodKeys, nextPeriodKey, previousPeriodKey, retentionExpired,
       FOCUS_REASONS, REASON_GROUPS, PREVENTABLE_GROUP, RETENTION_MS,
     };
   }

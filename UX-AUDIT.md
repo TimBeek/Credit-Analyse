@@ -37,7 +37,7 @@ Doorgevoerd:
 - laatste normale week wordt automatisch referentieweek;
 - dezelfde basis geldt voor redenen, groepen, aantallen, herkomst, CSV, PDF en PNG;
 - historische tabel toont geen misleidende delta voor de gemiste ronde;
-- normaalzone en prognose worden niet door de administratieve uitzondering vervuild.
+- I-MR-procesgrenzen en prognose worden niet door de administratieve uitzondering vervuild.
 
 ### 2. Ranking was informatief maar niet onderzoekbaar
 
@@ -67,7 +67,7 @@ Doorgevoerd:
 - grafieken hebben een programmatische titel en dynamische samenvatting;
 - herkomstpunten openen nu ook de betreffende periode;
 - inhaalweken pauzeren de prognose volledig, inclusief schaalberekening;
-- gemiste en ingehaalde betaalweek tellen niet mee in het normale gemiddelde en de normaalzone;
+- gemiste en ingehaalde betaalweek tellen niet mee in de I-MR-procesbasis;
 - de ruwe piek blijft zichtbaar, zodat de financiële werkelijkheid niet wordt weggepoetst.
 
 ### 5. Toegankelijkheid en bediening hadden gaten

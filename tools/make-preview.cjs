@@ -39,10 +39,11 @@ const raw = [
   [26, "Transportschade", "Retouren", 268.98, 1], [26, "Verkeerd besteld", "Retouren", 479, 2], [26, "Verkeerd geleverd", "Retouren", 562.62, 3],
 ];
 
-// Genereer weken 10-21 met oplopende trend + een piek (week 16) voor uitschieter/forecast.
+// Genereer weken 1-21 met een lichte trend en een piek in week 16. Samen met
+// weken 22-26 geeft dit genoeg historie om de I-MR-grenzen te beoordelen.
 const gen = [];
-for (let w = 10; w <= 21; w += 1) {
-  const total = Math.max(6000, 9000 + (w - 10) * 250 + ((w * 137) % 900 - 450) + (w === 16 ? 6500 : 0));
+for (let w = 1; w <= 21; w += 1) {
+  const total = Math.max(6000, 8200 + (w - 1) * 180 + ((w * 137) % 900 - 450) + (w === 16 ? 6500 : 0));
   [["Niet akkoord met alt", "Klantenservice", 0.30, 6], ["Annulering door klant", "Klantenservice", 0.22, 7],
    ["Niet werkzaam", "Retouren", 0.16, 5], ["Niet naar wens, B-grade", "Retouren", 0.17, 4],
    ["Transportschade", "Retouren", 0.15, 3]].forEach(([reason, origin, frac, cnt]) => {

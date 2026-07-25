@@ -8,7 +8,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<link rel="stylesheet" href="assets/credit-analyse.css?v=20260725-2">
+<link rel="stylesheet" href="assets/credit-analyse.css?v=20260725-3">
 </head>
 <body>
 <a class="skip-link" href="#dashboard">Ga naar de analyse</a>
@@ -118,6 +118,36 @@
         <article class="panel">
           <div class="panel-head">
             <div>
+              <h2>Kostendrijvers</h2>
+              <p>Welke redenen bepalen het totaal en welke verklaren de verandering in euro.</p>
+            </div>
+          </div>
+          <div class="driver-grid">
+            <section class="analysis-block" aria-labelledby="paretoHeading">
+              <div class="analysis-head">
+                <div>
+                  <h3 id="paretoHeading">Pareto van creditkosten</h3>
+                  <p>Aflopend op werkelijk uitbetaald bedrag.</p>
+                </div>
+              </div>
+              <div id="paretoChart"></div>
+            </section>
+            <section class="analysis-block" aria-labelledby="changeHeading">
+              <div class="analysis-head">
+                <div>
+                  <h3 id="changeHeading">Wat verklaart het verschil?</h3>
+                  <p>Absolute bijdrage per reden; rood verhoogt en groen verlaagt de kosten.</p>
+                </div>
+              </div>
+              <div id="changeDrivers"></div>
+            </section>
+          </div>
+          <p class="method-note"><strong>Let op:</strong> % van totaal is de verdeling binnen uitbetaalde credits. Zonder omzet- of ordertotaal is dit geen retourpercentage van alle verkopen.</p>
+        </article>
+
+        <article class="panel">
+          <div class="panel-head">
+            <div>
               <h2>Redenenranking</h2>
               <p id="compareMeta" class="panel-meta"></p>
             </div>
@@ -132,7 +162,7 @@
           <div class="panel-head">
             <div>
               <h2>Trendmonitor</h2>
-              <p>Historie met normaalzone, uitschieters, inhaalweken en prognose.</p>
+              <p>Historie met I-MR-procesgrenzen, ontbrekende perioden, inhaalweken en gevalideerde prognose.</p>
             </div>
           </div>
           <div id="trendChart" class="trend-wrap"></div>
@@ -192,6 +222,6 @@
 
 <script src="assets/xlsx.full.min.js"></script>
 <script src="assets/jspdf.umd.min.js"></script>
-<script src="assets/credit-analyse.js?v=20260725-2"></script>
+<script src="assets/credit-analyse.js?v=20260725-3"></script>
 </body>
 </html>

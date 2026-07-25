@@ -18,11 +18,14 @@ Open daarna: `http://localhost:8091/`
 - **Hero:** het totaal teruggestort van de gekozen periode, groot, met het **verschil in % t.o.v. de vorige periode** (bv. €14.699, +30% t.o.v. vorige week) en t.o.v. het gemiddelde. Rood = hoger, groen = lager. Plus een gewone-taal conclusiezin voor wie geen analist is.
 - **Focustegels:** *Niet akkoord met ALT* en *Niet werkzaam* (door Wout genoemd) plus *Voorkombaar (onze fout)* — elk met het % van het totaal en de beweging (bv. "vorige week 23,0% → nu 23,2%").
 - **Waar zit het in:** de ~40 redenen gebundeld in vijf groepen met een compositiebalk en **bedrag groot** per groep. De groepen zijn **knoppen**: klik een groep om de tabel eronder te filteren op alleen die redenen (met subtotaal). Voorkombaar (onze fout) staat rood.
+- **Kostendrijvers:** een Pareto-overzicht laat zien hoeveel redenen samen minimaal 80% van het creditbedrag vormen. Een tweede grafiek rangschikt de grootste stijgers en dalers in euro's ten opzichte van de vergelijkingsperiode.
 - **Vergelijktabel (de kern):** per reden het bedrag, aantal, **% van totaal nu**, **% vorige periode**, **verschil aandeel (%-punt)** en **verschil €**. De kolommen zijn sorteerbaar en blijven bruikbaar met toetsenbord en schermlezer. Met een uitlegregel en gemarkeerde focusredenen/voorkombare fouten.
+- **Belangrijke definitie:** “% van totaal” is de verdeling binnen alle uitbetaalde credits. Een echte retourratio vereist later een noemer, bijvoorbeeld orders, omzet of verkochte apparaten.
 
 **Verloop per periode**
-- Professionele lijn/vlak-grafiek van het totaal per week/maand/kwartaal/jaar, met filters (**Bedrag / Aantal / Gemiddeld**, bereik 13/26/52/alles), een **normaalzone** (gemiddelde ± spreiding), rood gemarkeerde **uitschieters** en klikbare punten.
-- **Prognose** (aan/uit): exponential smoothing (ETS) — automatisch **Holt-Winters** met seizoen bij ≥2 volledige cycli, anders een **gedempte trend** (schiet niet door); uitschieters worden eerst gladgestreken en de band toont de onzekerheid.
+- Professionele tijdreeks van bedrag, aantal of gemiddeld creditbedrag met bereik 13/26/52/alles. Ontbrekende kalenderperioden blijven zichtbare gaten en worden niet als nul of als aansluitende lijn geïnterpreteerd.
+- **I-MR-procesgrenzen:** de proceslijn en drie-sigma-grenzen gebruiken de moving range van opeenvolgende bruikbare perioden. Formele signalering start bij 20 meetpunten en is tot 25 punten als voorlopig gemarkeerd. Administratieve inhaalparen tellen niet mee.
+- **Gevalideerde prognose** (aan/uit): ETS wordt met rolling-origin backtests vergeleken met een naïeve referentie. De beste methode wordt gekozen, gemiddelde absolute fout (MAE) wordt getoond en de 80%-onzekerheidsband groeit met de horizon. Minder dan acht aaneengesloten perioden geeft bewust geen prognose.
 - **Retouren vs Klantenservice:** aantallen per periode gesplitst naar herkomst, zodat je ziet of de retouren dalen of stijgen.
 - **Periodetotalen-tabel:** elk totaal met het verschil in % en euro's t.o.v. de periode ervoor — maand-op-maand, kwartaal-op-kwartaal, jaar-op-jaar.
 - **Inhaalweekcorrectie:** een bijna lege betaalweek gevolgd door een dubbele betaalweek wordt als één administratieve inhaalronde herkend. Het werkelijke uitbetaalde bedrag blijft zichtbaar; vergelijkingen gebruiken het gemiddelde van beide weken tegenover de laatste normale referentieweek. Dit werkt door in overzicht, redenen, groepen, herkomst, CSV, PDF en PNG.
@@ -36,7 +39,7 @@ Bovenin kies je **periode** (week/maand/kwartaal/jaar), **welke** periode, **her
 
 ## Aanleveren aan de baas
 
-- **Afbeelding voor Wout (PNG):** één knop maakt een nette PNG-samenvatting (hero, focusredenen, de vergelijktabel met eindtotaal, "waar zit het in" in euro's) die je direct kunt doorsturen — zonder screenshot te hoeven maken. Volgt de gekozen periode en herkomst.
+- **Afbeelding voor Wout (PNG):** één knop maakt een nette PNG-samenvatting met totaal, groepen, Pareto-concentratie, grootste veranderingen en de vergelijktabel met eindtotaal. Volgt de gekozen periode en herkomst.
 - **Schermweergave:** het overzicht is ook strak genoeg om zelf een screenshot van te maken.
 - **Rapport (PDF):** verzorgd rapport van de gekozen periode — hero, focusredenen, de volledige vergelijktabel, per groep, het verloop en de signalen.
 - **CSV:** exporteert de vergelijktabel om zelf mee te rekenen.
@@ -58,10 +61,13 @@ Alles blijft lokaal in de browser. Klantnaam en ordernummer worden bij import he
 
 ```powershell
 npm run check   # syntax-check
-npm test        # rekenkern + import + privacy + jaarcorrectie + inhaalweek + forecast (78 checks)
+npm test        # rekenkern + import + privacy + kalendergaten + I-MR + forecast (99 checks)
 node tools/render-smoke.cjs   # render-laag + PDF + PNG bouwen zonder crash
 node tools/make-preview.cjs   # (optioneel) preview-pagina's met testdata voor screenshots
 ```
+
+De statistische ontwerpkeuzes en primaire bronnen staan in
+[`STATISTICAL-RESEARCH.md`](STATISTICAL-RESEARCH.md).
 
 ## Online zetten (GitHub Pages)
 

@@ -224,7 +224,7 @@ ok("ALT verschil versus W28 = 0", near(catchAlt.amountDelta, 0), `got ${catchAlt
 ok("zichtbare groepsbedragen tellen op tot ruwe W30", near(catchCtx.groupComparison.reduce((sum, group) => sum + group.amount, 0), 7900));
 ok("beoordelingsgroepen tellen op tot weekgemiddelde", near(catchCtx.groupComparison.reduce((sum, group) => sum + group.comparisonAmount, 0), 4000));
 const catchTrend = api.getTrendSeries(catchCtx);
-ok("inhaalweek vervuilt de normaalzone niet", catchTrend.statsN === 4 && near(catchTrend.avg, 4000), `statsN ${catchTrend.statsN}, avg ${catchTrend.avg}`);
+ok("inhaalweek vervuilt de I-MR-procesbasis niet", catchTrend.statsN === 4 && near(catchTrend.avg, 4000), `statsN ${catchTrend.statsN}, avg ${catchTrend.avg}`);
 ok("prognose is voor inhaalweek echt uit de schaalberekening", catchTrend.forecast === null && near(catchTrend.maxVal, 7900), `forecast ${catchTrend.forecast}, max ${catchTrend.maxVal}`);
 
 // ---------------------------------------------------------------------------
@@ -249,10 +249,67 @@ const seasonal = [];
 for (let i = 0; i < 24; i += 1) seasonal.push(100 + i * 2 + (i % 4 === 0 ? 40 : i % 4 === 2 ? -20 : 0));
 const fSeason = api.forecastSeries(seasonal, noOut(seasonal), 4, 4);
 ok("≥2 seizoenscycli → Holt-Winters seizoensmodel", /Holt-Winters/.test(fSeason.method), fSeason.method);
-ok("nextPeriodKey week rolt door", api.nextPeriodKey("week", "2026-W52") === "2027-W01" && api.nextPeriodKey("week", "2026-W26") === "2026-W27");
+ok("ISO-week 53 wordt correct meegenomen", api.nextPeriodKey("week", "2026-W52") === "2026-W53");
+ok("week 53 rolt correct door naar nieuw jaar", api.nextPeriodKey("week", "2026-W53") === "2027-W01");
+ok("jaar zonder week 53 rolt na W52 door", api.nextPeriodKey("week", "2025-W52") === "2026-W01");
 
 // ---------------------------------------------------------------------------
-console.log("\n11. Privacy: automatisch wissen na 30 min inactiviteit");
+console.log("\n11. Kalendergaten, procesgrenzen en managementanalyse");
+ok("ontbrekende kalenderweek wordt toegevoegd als gat",
+  JSON.stringify(api.completePeriodKeys("week", ["2026-W25", "2026-W27"])) === JSON.stringify(["2026-W25", "2026-W26", "2026-W27"]));
+ok("vorige week over jaargrens klopt", api.previousPeriodKey("week", "2027-W01") === "2026-W53");
+
+const stable = Array.from({ length: 20 }, (_, index) => 100 + (index % 2 ? 2 : -2));
+const shortControl = api.buildIndividualsControl(stable.slice(0, 19));
+const fullControl = api.buildIndividualsControl([...stable, 180]);
+ok("I-MR start niet voor 20 bruikbare punten", shortControl.available === false && shortControl.n === 19);
+ok("I-MR is beschikbaar vanaf 20 bruikbare punten", fullControl.available === true && fullControl.n === 21);
+ok("duidelijke piek ligt boven procesgrens", fullControl.pointSignals.at(-1) === true, JSON.stringify({ ucl: fullControl.ucl }));
+const gapControl = api.buildIndividualsControl([...new Array(10).fill(100), null, ...new Array(10).fill(200)]);
+ok("moving range springt niet over een ontbrekende periode", near(gapControl.mrAverage, 0), `got ${gapControl.mrAverage}`);
+const brokenTrend = api.buildIndividualsControl([
+  100, 99, 101, 100, 99, 101, 100, 99, 101, 100,
+  101, 102, 103, null, 104, 105, 106, 107, 108, 109, 110, 111,
+]);
+ok("trendregel springt niet over een ontbrekende periode", !brokenTrend.rules.some(rule => rule.type === "trend" && rule.index === 16));
+
+const caughtPairs = api.findAdministrativeCatchUps(
+  ["2026-W25", "2026-W26", "2026-W27", "2026-W28", "2026-W29", "2026-W30"],
+  [4000, 4100, 3900, 4000, 100, 7900]
+);
+ok("historisch inhaalpaar wordt herkend", caughtPairs.length === 1 && caughtPairs[0].previousKey === "2026-W29");
+
+const validation = api.validateForecast(rising, noOut(rising), 0);
+const selectedForecast = api.selectValidatedForecast(rising, noOut(rising), 0, 3);
+ok("rolling-origin validatie levert minimaal 3 testpunten", validation && validation.testN >= 3, JSON.stringify(validation));
+ok("forecastkeuze bevat benchmarkvalidatie", selectedForecast && selectedForecast.validation && selectedForecast.preds.length === 3);
+ok("gevalideerde forecast wacht op 8 punten", api.selectValidatedForecast(rising.slice(0, 7), noOut(rising.slice(0, 7)), 0, 3) === null);
+
+resetState(records);
+api.state.selectedKey = "2026-W26";
+ctx = api.getDashboardContext();
+const pareto = api.buildParetoRows(ctx, 3);
+const drivers = api.buildChangeDrivers(ctx, 4);
+ok("Pareto staat aflopend op huidig bedrag", pareto.rows[0].amount >= pareto.rows[1].amount);
+ok("Pareto bereikt cumulatief 100%", near(pareto.rows.at(-1).cumulative, 100, 0.01), `got ${pareto.rows.at(-1).cumulative}`);
+ok("Pareto benoemt hoeveel redenen 80% vormen", pareto.countToEighty > 0 && pareto.countToEighty <= pareto.totalReasons);
+ok("veranderingsdrivers staan op absolute impact", Math.abs(drivers.rows[0].amountDelta) >= Math.abs(drivers.rows[1].amountDelta));
+ok("veranderingsdrivers sluiten aan op totaalverschil", near(drivers.totalDelta, 4000), `got ${drivers.totalDelta}`);
+
+const recordsWithGap = [
+  rec("2026-W25", "2026-06", "Transportschade", "Retouren", 4000, 20),
+  rec("2026-W27", "2026-07", "Transportschade", "Retouren", 4500, 22),
+];
+resetState(recordsWithGap);
+api.state.selectedKey = "2026-W27";
+const gapCtx = api.getDashboardContext();
+const gapTrend = api.getTrendSeries(gapCtx);
+ok("week na een gat heeft geen misleidende vorige-weekvergelijking", gapCtx.previousKey === "");
+ok("trend bewaart ontbrekende week als null", gapTrend.keys.includes("2026-W26") && gapTrend.values[gapTrend.keys.indexOf("2026-W26")] === null);
+ok("trend rapporteert het aantal ontbrekende perioden", gapTrend.missingN === 1, `got ${gapTrend.missingN}`);
+
+// ---------------------------------------------------------------------------
+console.log("\n12. Privacy: automatisch wissen na 30 min inactiviteit");
 const NOW = 1000000000000;
 ok("RETENTION_MS = 30 minuten", api.RETENTION_MS === 30 * 60 * 1000, `got ${api.RETENTION_MS}`);
 ok("geen tijdstempel → niet wissen", api.retentionExpired(0, NOW) === false);
