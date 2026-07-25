@@ -82,6 +82,35 @@ Besluit voor de app:
 - label `% van totaal` expliciet als creditmix, niet als retourpercentage van
   alle verkopen.
 
+### Vertraagde verwerking en revisies
+
+- [Microsoft - Understand star schema and the importance for Power BI](https://learn.microsoft.com/en-au/power-bi/guidance/star-schema)
+  beschrijft dat feiten verschillende datumrollen kunnen hebben. Voor deze app
+  zijn dat de werkelijke betaaldatum en de operationele week waarop de retouren
+  betrekking hebben.
+- [AWS - Reprocess late-arriving data](https://docs.aws.amazon.com/timestream/latest/developerguide/scheduledqueries-patterns-latearrive.html)
+  behandelt vertraagd binnenkomende gegevens als een apart herstelproces, zodat
+  reeds verwerkte tijdvakken controleerbaar opnieuw kunnen worden berekend.
+- [ONS - Guide to statistical revisions](https://www.ons.gov.uk/methodology/methodologytopicsandstatisticalconcepts/revisions/guidetostatisticalrevisions)
+  adviseert revisies transparant te markeren en gebruikers uit te leggen wat is
+  gewijzigd en waarom.
+- Het [IFRS Conceptual Framework](https://www.ifrs.org/content/dam/ifrs/publications/pdf-standards/english/2024/issued/part-a/conceptual-framework-for-financial-reporting.pdf?bypass=on)
+  ondersteunt het toerekenen van effecten aan de periode waarop ze economisch
+  betrekking hebben, los van het kasmoment.
+
+Besluit voor de app:
+
+- behoud iedere geïmporteerde credit op de werkelijke betaaldatum;
+- voeg alleen bij een bevestigde uitzondering een aparte operationele
+  Retouren-toerekening toe;
+- laat Klantenservice en andere herkomsten ongemoeid;
+- bied zowel **Operationeel** als **Werkelijk betaald** aan;
+- bewaar het gecombineerde eurototaal exact en toon een reconciliatie voor en
+  na de correctie;
+- sluit gecorrigeerde perioden uit van procesgrenzen en pauzeer prognoses in de
+  werkelijke betaalweergave, omdat die piek administratief is;
+- pas dit alleen handmatig toe wanneer de dubbele batch echt is bevestigd.
+
 ### Grafiekontwerp en toegankelijkheid
 
 - [ONS - Line chart](https://service-manual.ons.gov.uk/data-visualisation/chart-types/line-chart)

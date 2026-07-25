@@ -137,7 +137,37 @@ run("renderDashboard zonder records (lege staat)", () => { api.state.records = [
   });
 });
 
+const batchData = [];
+for (let week = 25; week <= 28; week += 1) {
+  batchData.push(rec(`2026-W${week}`, "2026-06", "Annulering door klant", "Klantenservice", 7468, 20));
+  batchData.push(rec(`2026-W${week}`, "2026-06", "Niet werkzaam", "Retouren", 15489.50, 60));
+}
+batchData.push(rec("2026-W29", "2026-07", "Annulering door klant", "Klantenservice", 7468, 20));
+batchData.push(rec("2026-W30", "2026-07", "Annulering door klant", "Klantenservice", 7468, 20));
+batchData.push(rec("2026-W30", "2026-07", "Niet werkzaam", "Retouren", 30979, 120));
+
+run("dubbele Retourenbatch rendert operationeel inclusief PDF en PNG", () => {
+  api.state.records = batchData;
+  api.state.adjustments = [{
+    currentKey: "2026-W30", targetKey: "2026-W29", origin: "Retouren",
+    amount: 15489.50, method: "estimate", createdAt: new Date().toISOString(),
+  }];
+  api.state.analysisBasis = "operational";
+  api.state.periodType = "week"; api.state.origin = "all"; api.state.reasonSearch = "";
+  api.state.selectedKey = "2026-W30"; api.state.activeTab = "control";
+  api.renderDashboard();
+  const ctx = api.getDashboardContext();
+  api.generateReportPdf(ctx);
+  api.generateReportImage(ctx);
+});
+run("dubbele Retourenbatch rendert ook op werkelijke betaalbasis", () => {
+  api.state.analysisBasis = "actual";
+  api.state.activeTab = "overview";
+  api.renderDashboard();
+});
+
 run("buildPlainConclusion levert een leesbare zin", () => {
+  api.state.records = data; api.state.adjustments = []; api.state.analysisBasis = "operational";
   api.state.periodType = "week"; api.state.selectedKey = "2026-W26";
   const s = api.buildPlainConclusion(api.getDashboardContext());
   if (!s || typeof s !== "string" || s.length < 30) throw new Error(`onverwacht: ${s}`);

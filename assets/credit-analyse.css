@@ -1830,6 +1830,100 @@ table tbody tr:hover { background: var(--hover); }
 }
 .method-note strong { color: var(--ink); }
 
+/* ---------- Bijzondere betaalweek ---------- */
+.basis-bar {
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--r);
+  box-shadow: var(--sh-1);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-4);
+  justify-content: space-between;
+  padding: 11px 14px;
+}
+.basis-bar > div:first-child { display: grid; gap: 1px; }
+.basis-bar strong { color: var(--ink); font-size: 13px; }
+.basis-bar span { color: var(--ink-3); font-size: 12px; }
+.basis-switch button { min-width: 150px; }
+.adjustment-panel { grid-column: 1 / -1; }
+.adjustment-empty {
+  color: var(--ink-3);
+  font-size: 13px;
+  padding: 6px 0;
+}
+.adjustment-layout { display: grid; gap: var(--sp-5); }
+.adjustment-recon {
+  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
+  display: grid;
+  grid-template-columns: minmax(150px, 1.25fr) repeat(2, minmax(130px, .8fr));
+}
+.adjustment-recon > div {
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+  padding: 9px 10px;
+}
+.adjustment-recon > div:nth-last-child(-n + 3) { border-bottom: 0; }
+.adjustment-recon .recon-head {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.adjustment-recon .recon-label { color: var(--ink-3); font-size: 12px; font-weight: 700; }
+.adjustment-recon .recon-value {
+  color: var(--ink);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  text-align: right;
+}
+.adjustment-recon .recon-value.is-adjusted { color: var(--brand-ink); }
+.adjustment-form {
+  align-items: end;
+  display: grid;
+  gap: var(--sp-4);
+  grid-template-columns: minmax(190px, 1fr) minmax(190px, 1fr) auto;
+}
+.adjustment-form label { display: grid; gap: 6px; }
+.adjustment-form label > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.adjustment-form input,
+.adjustment-form select {
+  background: var(--surface);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-sm);
+  height: 40px;
+  min-width: 0;
+  padding: 0 11px;
+  width: 100%;
+}
+.adjustment-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.adjustment-status {
+  align-items: flex-start;
+  background: var(--warn-tint);
+  border-left: 3px solid var(--warn);
+  display: grid;
+  gap: 2px;
+  padding: 9px 11px;
+}
+.adjustment-status strong { color: var(--ink); font-size: 13px; }
+.adjustment-status span { color: var(--ink-3); font-size: 12px; }
+.adjustment-note {
+  color: var(--ink-3);
+  font-size: 12px;
+  line-height: 1.55;
+  margin: -4px 0 0;
+}
+.adjustment-note strong { color: var(--ink); }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 1180px) {
   .hero { grid-template-columns: 1fr 1fr; }
@@ -1858,6 +1952,11 @@ table tbody tr:hover { background: var(--hover); }
   .focus-share-sm { white-space: normal; }
   .panel { padding: var(--sp-4); }
   .panel-head { display: grid; }
+  .basis-bar { align-items: stretch; display: grid; }
+  .basis-switch { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .basis-switch button { min-width: 0; }
+  .adjustment-form { grid-template-columns: 1fr 1fr; }
+  .adjustment-actions { grid-column: 1 / -1; }
   .driver-grid { grid-template-columns: 1fr; }
   .analysis-block + .analysis-block {
     border-left: 0;
@@ -1880,6 +1979,12 @@ table tbody tr:hover { background: var(--hover); }
   .header-actions { grid-template-columns: 1fr; }
   .tabs { display: grid; grid-template-columns: 1fr; }
   .context-strip { grid-template-columns: 1fr; }
+  .basis-switch,
+  .adjustment-form { grid-template-columns: 1fr; }
+  .adjustment-recon { grid-template-columns: minmax(110px, 1fr) repeat(2, minmax(88px, .8fr)); }
+  .adjustment-recon > div { padding: 8px 6px; }
+  .adjustment-recon .recon-value { font-size: 12px; }
+  .adjustment-actions { grid-column: auto; }
   .hero-kpis { grid-template-columns: 1fr; }
   .hero-amount { font-size: 34px; }
   .group-tiles,

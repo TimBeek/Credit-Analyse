@@ -8,7 +8,7 @@
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
-<link rel="stylesheet" href="assets/credit-analyse.css?v=20260725-3">
+<link rel="stylesheet" href="assets/credit-analyse.css?v=20260725-4">
 </head>
 <body>
 <a class="skip-link" href="#dashboard">Ga naar de analyse</a>
@@ -91,6 +91,17 @@
       </label>
     </section>
 
+    <section class="basis-bar" id="basisBar" hidden aria-label="Rapportagebasis">
+      <div>
+        <strong>Rapportagebasis</strong>
+        <span id="basisSummary"></span>
+      </div>
+      <div class="segmented basis-switch" role="group" aria-label="Rapportagebasis kiezen">
+        <button type="button" data-analysis-basis="operational">Operationeel toegerekend</button>
+        <button type="button" data-analysis-basis="actual">Werkelijk betaald</button>
+      </div>
+    </section>
+
     <section class="dashboard" id="dashboard" hidden>
       <nav class="tabs" id="dashboardTabs" role="tablist" aria-label="Onderdelen">
         <button type="button" class="is-active" id="tab-overview" role="tab" aria-controls="panel-overview" aria-selected="true" data-tab="overview">Executive overzicht</button>
@@ -127,7 +138,7 @@
               <div class="analysis-head">
                 <div>
                   <h3 id="paretoHeading">Pareto van creditkosten</h3>
-                  <p>Aflopend op werkelijk uitbetaald bedrag.</p>
+                  <p>Aflopend op het bedrag van de gekozen rapportagebasis.</p>
                 </div>
               </div>
               <div id="paretoChart"></div>
@@ -191,6 +202,16 @@
 
       <!-- IMPORT & CONTROLE -->
       <div class="tab-panel" id="panel-control" role="tabpanel" aria-labelledby="tab-control" data-tab-section="control" hidden>
+        <article class="panel adjustment-panel">
+          <div class="panel-head">
+            <div>
+              <h2>Bijzondere betaalweek</h2>
+              <p>Toerekening van een vertraagde Retourenbatch, met volledige aansluiting op de werkelijke betalingen.</p>
+            </div>
+          </div>
+          <div id="adjustmentPanel"></div>
+        </article>
+
         <article class="panel">
           <div class="panel-head">
             <div>
@@ -222,6 +243,6 @@
 
 <script src="assets/xlsx.full.min.js"></script>
 <script src="assets/jspdf.umd.min.js"></script>
-<script src="assets/credit-analyse.js?v=20260725-3"></script>
+<script src="assets/credit-analyse.js?v=20260725-4"></script>
 </body>
 </html>

@@ -29,6 +29,8 @@ Open daarna: `http://localhost:8091/`
 - **Retouren vs Klantenservice:** aantallen per periode gesplitst naar herkomst, zodat je ziet of de retouren dalen of stijgen.
 - **Periodetotalen-tabel:** elk totaal met het verschil in % en euro's t.o.v. de periode ervoor — maand-op-maand, kwartaal-op-kwartaal, jaar-op-jaar.
 - **Inhaalweekcorrectie:** een bijna lege betaalweek gevolgd door een dubbele betaalweek wordt als één administratieve inhaalronde herkend. Het werkelijke uitbetaalde bedrag blijft zichtbaar; vergelijkingen gebruiken het gemiddelde van beide weken tegenover de laatste normale referentieweek. Dit werkt door in overzicht, redenen, groepen, herkomst, CSV, PDF en PNG.
+- **Zeldzame dubbele Retourenbatch:** onder **Controle → Bijzondere betaalweek** kan alleen het vertraagde deel uit herkomst *Retouren* aan de oorspronkelijke week worden toegerekend. De app stelt een gelijke verdeling voor, maar accepteert ook een exact bekend bedrag. Klantenservice blijft volledig in de echte betaalweek staan.
+- **Twee rapportageperspectieven:** **Operationeel** toont de weken waarop de Retouren betrekking hebben; **Werkelijk betaald** toont de bank-/betaalstroom. Het gezamenlijke eurototaal verandert nooit en de correctie blijft zichtbaar in dashboard, tabel, CSV, PDF en PNG.
 
 **Import & controle**
 - Wat is verwerkt, hersteld of overgeslagen bij de laatste import, plus onbekende redenen met suggesties.
@@ -61,7 +63,7 @@ Alles blijft lokaal in de browser. Klantnaam en ordernummer worden bij import he
 
 ```powershell
 npm run check   # syntax-check
-npm test        # rekenkern + import + privacy + kalendergaten + I-MR + forecast (99 checks)
+npm test        # rekenkern + import + privacy + kalendergaten + I-MR + forecast + toerekening
 node tools/render-smoke.cjs   # render-laag + PDF + PNG bouwen zonder crash
 node tools/make-preview.cjs   # (optioneel) preview-pagina's met testdata voor screenshots
 ```

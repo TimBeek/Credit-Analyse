@@ -9,6 +9,7 @@
   const STORAGE_KEY = "remarkt.creditAnalyse.records.v2";
   const META_KEY = "remarkt.creditAnalyse.meta.v2";
   const ACTIVE_KEY = "remarkt.creditAnalyse.activeAt.v2";
+  const ADJUSTMENT_KEY = "remarkt.creditAnalyse.adjustments.v1";
   const RETENTION_MS = 30 * 60 * 1000;   // auto-wis na 30 minuten inactiviteit
   const RETENTION_LABEL = "30 minuten";
   const FALLBACK_REASON = "Overige";
@@ -28,6 +29,7 @@
         localStorage.removeItem(STORAGE_KEY);
         localStorage.removeItem(META_KEY);
         localStorage.removeItem(ACTIVE_KEY);
+        localStorage.removeItem(ADJUSTMENT_KEY);
       } else if (!activeAt) {
         localStorage.setItem(ACTIVE_KEY, String(Date.now()));
       }
@@ -172,6 +174,8 @@
   const state = {
     records: loadRecords(),
     meta: loadMeta(),
+    adjustments: loadAdjustments(),
+    analysisBasis: "operational",
     quality: null,
     reasonList: EXPECTED_REASONS,
     periodType: "week",
@@ -203,6 +207,8 @@
     contextStrip: document.getElementById("contextStrip"),
     importBanner: document.getElementById("importBanner"),
     controlBar: document.getElementById("controlBar"),
+    basisBar: document.getElementById("basisBar"),
+    basisSummary: document.getElementById("basisSummary"),
     dashboard: document.getElementById("dashboard"),
     periodSelect: document.getElementById("periodSelect"),
     originSelect: document.getElementById("originSelect"),
@@ -219,6 +225,7 @@
     originSplit: document.getElementById("originSplit"),
     periodTotals: document.getElementById("periodTotals"),
     qualityDetails: document.getElementById("qualityDetails"),
+    adjustmentPanel: document.getElementById("adjustmentPanel"),
   } : {};
 
   // ---------------------------------------------------------------------------
@@ -821,13 +828,78 @@
   // ---------------------------------------------------------------------------
   // Analysis (pure over state.records + filters)
   // ---------------------------------------------------------------------------
-  function filteredRecords(records = state.records) {
+  function periodKeysFromWeekKey(weekKey) {
+    const match = String(weekKey || "").match(/^(\d{4})-W(\d{2})$/);
+    return match ? makePeriodKeys(null, Number(match[1]), Number(match[2])) : null;
+  }
+
+  function validAdjustmentsForRecords(records, adjustments) {
+    return (adjustments || []).map(normalizeAdjustment).filter(adjustment => {
+      if (!adjustment) return false;
+      const available = records
+        .filter(record => record.weekKey === adjustment.currentKey && record.origin === adjustment.origin)
+        .reduce((sum, record) => sum + Math.max(0, Number(record.amount) || 0), 0);
+      return available > 0 && adjustment.amount <= available + 0.01;
+    });
+  }
+
+  // Herverdeelt alleen de geselecteerde Retourenbatch. De bronrecords blijven
+  // onaangetast; dit resultaat bestaat uitsluitend voor operationele analyse.
+  function applyReturnAdjustments(records, adjustments) {
+    const valid = validAdjustmentsForRecords(records, adjustments);
+    if (!valid.length) return records.slice();
+    let result = records.map(record => ({ ...record }));
+    valid.forEach(adjustment => {
+      const returnRows = result.filter(record =>
+        record.weekKey === adjustment.currentKey && record.origin === adjustment.origin
+      );
+      const available = returnRows.reduce((sum, record) => sum + Math.max(0, Number(record.amount) || 0), 0);
+      if (!(available > 0)) return;
+      const ratio = Math.min(1, adjustment.amount / available);
+      const targetPeriods = periodKeysFromWeekKey(adjustment.targetKey);
+      if (!targetPeriods) return;
+      const shifted = [];
+      result = result.map(record => {
+        if (record.weekKey !== adjustment.currentKey || record.origin !== adjustment.origin) return record;
+        const movedAmount = Math.max(0, record.amount) * ratio;
+        const movedCount = Math.max(0, record.count) * ratio;
+        shifted.push({
+          ...record,
+          ...targetPeriods,
+          amount: movedAmount,
+          count: movedCount,
+        });
+        return {
+          ...record,
+          amount: record.amount - movedAmount,
+          count: record.count - movedCount,
+        };
+      });
+      result.push(...shifted);
+    });
+    return result;
+  }
+
+  function analysisSourceRecords() {
+    if (state.analysisBasis !== "operational") return state.records;
+    return applyReturnAdjustments(state.records, state.adjustments);
+  }
+
+  function filterRecordSet(records) {
     const reasonSearch = normalizeKey(state.reasonSearch);
     return records.filter(record => {
       if (state.origin !== "all" && record.origin !== state.origin) return false;
       if (reasonSearch && !normalizeKey(record.reason).includes(reasonSearch)) return false;
       return true;
     });
+  }
+
+  function filteredRecords(records = null) {
+    return filterRecordSet(records || analysisSourceRecords());
+  }
+
+  function rawFilteredRecords() {
+    return filterRecordSet(state.records);
   }
 
   function summarizeRecords(records) {
@@ -860,8 +932,84 @@
     return expectedPrevious && keys.includes(expectedPrevious) ? expectedPrevious : "";
   }
 
+  function normalizeAdjustment(value) {
+    if (!value || typeof value !== "object") return null;
+    const currentKey = String(value.currentKey || "");
+    const targetKey = String(value.targetKey || "");
+    const amount = Number(value.amount);
+    if (!/^\d{4}-W\d{2}$/.test(currentKey) || !/^\d{4}-W\d{2}$/.test(targetKey)) return null;
+    if (previousPeriodKey("week", currentKey) !== targetKey || !(amount > 0)) return null;
+    return {
+      currentKey,
+      targetKey,
+      origin: "Retouren",
+      amount: Math.round(amount * 100) / 100,
+      method: value.method === "exact" ? "exact" : "estimate",
+      createdAt: String(value.createdAt || ""),
+    };
+  }
+
+  function loadAdjustments() {
+    if (!HAS_STORAGE) return [];
+    try {
+      const values = JSON.parse(localStorage.getItem(ADJUSTMENT_KEY) || "[]");
+      return Array.isArray(values) ? values.map(normalizeAdjustment).filter(Boolean) : [];
+    } catch { return []; }
+  }
+
+  function saveAdjustments(adjustments) {
+    if (!HAS_STORAGE) return;
+    localStorage.setItem(ADJUSTMENT_KEY, JSON.stringify(adjustments));
+    localStorage.setItem(ACTIVE_KEY, String(Date.now()));
+  }
+
   function recordsForPeriod(type, key) {
     return filteredRecords().filter(record => periodKeyForRecord(record, type) === key);
+  }
+
+  function rawRecordsForPeriod(type, key) {
+    return rawFilteredRecords().filter(record => periodKeyForRecord(record, type) === key);
+  }
+
+  function originAmountForWeek(weekKey, origin, records = state.records) {
+    return records
+      .filter(record => record.weekKey === weekKey && record.origin === origin)
+      .reduce((sum, record) => sum + record.amount, 0);
+  }
+
+  function getAdjustmentImpact(type, key) {
+    let inbound = 0, outbound = 0;
+    const matches = [];
+    validAdjustmentsForRecords(state.records, state.adjustments).forEach(adjustment => {
+      const currentPeriods = periodKeysFromWeekKey(adjustment.currentKey);
+      const targetPeriods = periodKeysFromWeekKey(adjustment.targetKey);
+      if (!currentPeriods || !targetPeriods) return;
+      const currentPeriod = periodKeyForRecord(currentPeriods, type);
+      const targetPeriod = periodKeyForRecord(targetPeriods, type);
+      let matched = false;
+      if (currentPeriod === key) { outbound += adjustment.amount; matched = true; }
+      if (targetPeriod === key) { inbound += adjustment.amount; matched = true; }
+      if (matched) matches.push(adjustment);
+    });
+    const operationalNet = inbound - outbound;
+    return {
+      net: state.analysisBasis === "operational" ? operationalNet : 0,
+      operationalNet,
+      inbound,
+      outbound,
+      adjustments: matches,
+    };
+  }
+
+  function getAdjustmentPeriodKeys(type) {
+    const keys = new Set();
+    validAdjustmentsForRecords(state.records, state.adjustments).forEach(adjustment => {
+      const current = periodKeysFromWeekKey(adjustment.currentKey);
+      const target = periodKeysFromWeekKey(adjustment.targetKey);
+      if (current) keys.add(periodKeyForRecord(current, type));
+      if (target) keys.add(periodKeyForRecord(target, type));
+    });
+    return keys;
   }
 
   // Per reden: het werkelijk gerapporteerde bedrag plus een eventueel afwijkende
@@ -1129,6 +1277,22 @@
 
   function buildSignals(ctx) {
     const signals = [];
+    if (ctx.adjustmentImpact.adjustments.length) {
+      const amount = Math.max(...ctx.adjustmentImpact.adjustments.map(adjustment => adjustment.amount));
+      signals.push({
+        tone: "warn",
+        title: ctx.isOperational ? "Retourenbatch operationeel toegerekend" : "Retourenbatch-correctie beschikbaar",
+        detail: ctx.isOperational
+          ? `${formatMoney(amount)} aan vertraagde Retouren is naar de oorspronkelijke betaalweek toegerekend. Werkelijke betaalcijfers blijven ongewijzigd en zijn via Rapportagebasis te bekijken.`
+          : `${formatMoney(amount)} is als operationele Retouren-correctie vastgelegd; deze weergave toont nu de werkelijke betaaldatum.`,
+      });
+    } else if (ctx.returnBatchCandidate) {
+      signals.push({
+        tone: "warn",
+        title: "Mogelijke dubbele Retourenbatch",
+        detail: `${labelPeriod("week", ctx.returnBatchCandidate.targetKey)} bevatte weinig Retouren en ${labelPeriod("week", ctx.returnBatchCandidate.currentKey)} juist veel. Bevestig de toerekening onder Controle > Bijzondere betaalweek.`,
+      });
+    }
     if (ctx.catchUp) {
       signals.push({
         tone: "warn",
@@ -1228,6 +1392,10 @@
     const prevWord = PERIOD_TYPES[ctx.type].previousLabel;
     const top = ctx.comparison.filter(row => row.currentAmount > 0).sort((a, b) => b.currentAmount - a.currentAmount)[0];
     const preventable = ctx.groupComparison.find(group => group.key === PREVENTABLE_GROUP) || { share: 0 };
+    if (ctx.isOperational && ctx.adjustmentImpact.adjustments.length && Math.abs(ctx.adjustmentImpact.operationalNet) >= 0.01) {
+      const direction = ctx.adjustmentImpact.operationalNet > 0 ? "toegevoegd aan" : "doorgeschoven uit";
+      return `Deze ${periodWord} is operationeel ${formatMoney(ctx.current.total)} toegerekend; werkelijk betaald was ${formatMoney(ctx.actualCurrent.total)}. Er is ${formatMoney(Math.abs(ctx.adjustmentImpact.operationalNet))} aan vertraagde Retouren ${direction} deze periode. De tweewekenaansluiting blijft volledig gelijk.`;
+    }
     if (ctx.catchUp) {
       const referenceText = ctx.catchUp.referenceKey
         ? `${formatSignedPercent(ctx.catchUp.normalizedVsReferencePct, 0)} t.o.v. ${labelPeriod("week", ctx.catchUp.referenceKey)}`
@@ -1252,15 +1420,32 @@
     const previousKey = getPreviousKey(type, key);
     const current = summarizeRecords(recordsForPeriod(type, key));
     const previous = summarizeRecords(previousKey ? recordsForPeriod(type, previousKey) : []);
+    const actualCurrent = summarizeRecords(rawRecordsForPeriod(type, key));
+    const actualPrevious = summarizeRecords(previousKey ? rawRecordsForPeriod(type, previousKey) : []);
     const ctx = {
       type, key, latestKey, isLatest: key === latestKey, previousKey,
-      current, previous,
+      current, previous, actualCurrent, actualPrevious,
       periodStats: getPeriodStats(type),
     };
+    ctx.adjustmentImpact = getAdjustmentImpact(type, key);
+    if (state.analysisBasis === "operational" && ctx.adjustmentImpact.adjustments.length) {
+      const filteredNet = current.total - actualCurrent.total;
+      ctx.adjustmentImpact.operationalNet = filteredNet;
+      ctx.adjustmentImpact.net = filteredNet;
+      ctx.adjustmentImpact.inbound = Math.max(0, filteredNet);
+      ctx.adjustmentImpact.outbound = Math.max(0, -filteredNet);
+    }
+    ctx.hasAdjustments = validAdjustmentsForRecords(state.records, state.adjustments).length > 0;
+    ctx.isOperational = state.analysisBasis === "operational" && ctx.hasAdjustments;
+    ctx.returnBatchCandidate = type === "week" && !ctx.adjustmentImpact.adjustments.length
+      ? detectReturnBatchCandidate(key)
+      : null;
     ctx.administrativeCatchUps = type === "week"
       ? findAdministrativeCatchUps(ctx.periodStats.keys, ctx.periodStats.totals)
       : [];
-    ctx.catchUp = detectCatchUpWeek(ctx);
+    ctx.catchUp = ctx.adjustmentImpact.adjustments.length || ctx.returnBatchCandidate
+      ? null
+      : detectCatchUpWeek(ctx);
     ctx.analysisCurrent = current;
     ctx.comparisonPrevious = previous;
     ctx.comparisonPreviousKey = previousKey;
@@ -1281,6 +1466,7 @@
       }
     }
     const administrativeKeys = new Set(ctx.administrativeCatchUps.flatMap(pair => [pair.previousKey, pair.currentKey]));
+    getAdjustmentPeriodKeys(type).forEach(periodKey => administrativeKeys.add(periodKey));
     const totalByKey = new Map(ctx.periodStats.keys.map((periodKey, index) => [periodKey, ctx.periodStats.totals[index]]));
     ctx.processControlKeys = completePeriodKeys(type, ctx.periodStats.keys);
     const processValues = ctx.processControlKeys.map(periodKey => totalByKey.has(periodKey) ? totalByKey.get(periodKey) : null);
@@ -1377,6 +1563,139 @@
     if (document.activeElement !== els.reasonSearch) els.reasonSearch.value = state.reasonSearch;
   }
 
+  function getAdjustmentSetup(currentKey) {
+    const targetKey = previousPeriodKey("week", currentKey);
+    const currentKS = originAmountForWeek(currentKey, "Klantenservice");
+    const currentReturns = originAmountForWeek(currentKey, "Retouren");
+    const previousKS = originAmountForWeek(targetKey, "Klantenservice");
+    const previousReturns = originAmountForWeek(targetKey, "Retouren");
+    const actualCurrent = state.records
+      .filter(record => record.weekKey === currentKey)
+      .reduce((sum, record) => sum + record.amount, 0);
+    const actualPrevious = state.records
+      .filter(record => record.weekKey === targetKey)
+      .reduce((sum, record) => sum + record.amount, 0);
+    const suggestedAmount = Math.round((Math.max(0, currentReturns - previousReturns) / 2) * 100) / 100;
+    return {
+      currentKey,
+      targetKey,
+      currentKS,
+      currentReturns,
+      previousKS,
+      previousReturns,
+      currentOther: actualCurrent - currentKS - currentReturns,
+      previousOther: actualPrevious - previousKS - previousReturns,
+      suggestedAmount,
+      actualCurrent,
+      actualPrevious,
+    };
+  }
+
+  function renderBasisBar() {
+    if (!els.basisBar) return;
+    const valid = validAdjustmentsForRecords(state.records, state.adjustments);
+    els.basisBar.hidden = !valid.length;
+    if (!valid.length) return;
+    const operational = state.analysisBasis === "operational";
+    els.basisSummary.textContent = operational
+      ? "Retouren staan in de operationele week; bronbetalingen blijven intact."
+      : "Alle bedragen staan op de werkelijke betaaldatum.";
+    els.basisBar.querySelectorAll("[data-analysis-basis]").forEach(button => {
+      const active = button.dataset.analysisBasis === state.analysisBasis;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-pressed", String(active));
+    });
+  }
+
+  function adjustmentReconciliation(setup, amount) {
+    const moved = Math.max(0, Math.min(setup.currentReturns, Number(amount) || 0));
+    return {
+      moved,
+      operationalPrevious: setup.actualPrevious + moved,
+      operationalCurrent: setup.actualCurrent - moved,
+      combined: setup.actualPrevious + setup.actualCurrent,
+    };
+  }
+
+  function renderAdjustmentPanel() {
+    if (!els.adjustmentPanel) return;
+    if (state.periodType !== "week") {
+      els.adjustmentPanel.innerHTML = `<p class="adjustment-empty">Selecteer bovenaan een week om een Retourenbatch toe te rekenen.</p>`;
+      return;
+    }
+    const selectedKey = state.selectedKey || getAvailablePeriodKeys("week").at(-1) || "";
+    const related = state.adjustments.find(item => item.currentKey === selectedKey || item.targetKey === selectedKey);
+    const currentKey = related ? related.currentKey : selectedKey;
+    const setup = getAdjustmentSetup(currentKey);
+    if (!setup.currentKey || !setup.targetKey || !(setup.currentReturns > 0)) {
+      els.adjustmentPanel.innerHTML = `<p class="adjustment-empty">Voor ${escapeHtml(labelPeriod("week", currentKey))} staat geen Retourenbedrag klaar om te verdelen.</p>`;
+      return;
+    }
+    const existing = state.adjustments.find(item => item.currentKey === currentKey);
+    const method = existing && existing.method === "exact" ? "exact" : "estimate";
+    const amount = existing ? existing.amount : setup.suggestedAmount;
+    const recon = adjustmentReconciliation(setup, amount);
+    const status = existing ? `
+      <div class="adjustment-status">
+        <strong>Correctie actief · ${escapeHtml(existing.method === "exact" ? "exact bedrag" : "50/50-schatting")}</strong>
+        <span>${formatMoney(existing.amount)} Retouren is operationeel van ${escapeHtml(labelPeriod("week", existing.currentKey))} naar ${escapeHtml(labelPeriod("week", existing.targetKey))} toegerekend.</span>
+      </div>` : "";
+    els.adjustmentPanel.innerHTML = `
+      <div class="adjustment-layout">
+        ${status}
+        <div class="adjustment-recon" aria-label="Aansluiting bijzondere betaalweek">
+          <div class="recon-head">Aansluiting</div>
+          <div class="recon-head recon-value">${escapeHtml(labelPeriod("week", setup.targetKey))}</div>
+          <div class="recon-head recon-value">${escapeHtml(labelPeriod("week", setup.currentKey))}</div>
+          <div class="recon-label">Klantenservice · werkelijk</div>
+          <div class="recon-value">${formatMoney(setup.previousKS)}</div>
+          <div class="recon-value">${formatMoney(setup.currentKS)}</div>
+          <div class="recon-label">Retouren · werkelijk</div>
+          <div class="recon-value">${formatMoney(setup.previousReturns)}</div>
+          <div class="recon-value">${formatMoney(setup.currentReturns)}</div>
+          <div class="recon-label">Overige herkomst · werkelijk</div>
+          <div class="recon-value">${formatMoney(setup.previousOther)}</div>
+          <div class="recon-value">${formatMoney(setup.currentOther)}</div>
+          <div class="recon-label">Totaal · werkelijk betaald</div>
+          <div class="recon-value">${formatMoney(setup.actualPrevious)}</div>
+          <div class="recon-value">${formatMoney(setup.actualCurrent)}</div>
+          <div class="recon-label">Totaal · operationeel</div>
+          <div class="recon-value is-adjusted" data-recon-previous>${formatMoney(recon.operationalPrevious)}</div>
+          <div class="recon-value is-adjusted" data-recon-current>${formatMoney(recon.operationalCurrent)}</div>
+        </div>
+        <form class="adjustment-form" data-adjustment-form data-current-key="${escapeHtml(setup.currentKey)}" data-target-key="${escapeHtml(setup.targetKey)}" data-suggested="${setup.suggestedAmount}">
+          <label>
+            <span>Verdeling Retourenbatch</span>
+            <select name="method" data-adjustment-method>
+              <option value="estimate" ${method === "estimate" ? "selected" : ""}>Schatting · Retouren gelijk over 2 weken</option>
+              <option value="exact" ${method === "exact" ? "selected" : ""}>Exact bedrag bekend</option>
+            </select>
+          </label>
+          <label>
+            <span>Naar ${escapeHtml(labelPeriod("week", setup.targetKey))}</span>
+            <input name="amount" data-adjustment-amount type="number" min="0.01" max="${setup.currentReturns.toFixed(2)}" step="0.01" value="${amount.toFixed(2)}" ${method === "estimate" ? "readonly" : ""}>
+          </label>
+          <div class="adjustment-actions">
+            <button type="submit" class="btn btn-primary">${existing ? "Correctie bijwerken" : "Correctie activeren"}</button>
+            ${existing ? `<button type="button" class="btn btn-ghost" data-remove-adjustment="${escapeHtml(existing.currentKey)}">Verwijderen</button>` : ""}
+          </div>
+        </form>
+        <p class="adjustment-note"><strong>Controle:</strong> beide weken blijven samen ${formatMoney(recon.combined)}. Redenen en aantallen binnen Retouren worden naar verhouding verdeeld, omdat de import de oorspronkelijke week per losse credit niet bevat.</p>
+      </div>`;
+  }
+
+  function updateAdjustmentPreview() {
+    const form = els.adjustmentPanel && els.adjustmentPanel.querySelector("[data-adjustment-form]");
+    if (!form) return;
+    const setup = getAdjustmentSetup(form.dataset.currentKey);
+    const amountInput = form.querySelector("[data-adjustment-amount]");
+    const recon = adjustmentReconciliation(setup, amountInput.value);
+    const previous = els.adjustmentPanel.querySelector("[data-recon-previous]");
+    const current = els.adjustmentPanel.querySelector("[data-recon-current]");
+    if (previous) previous.textContent = formatMoney(recon.operationalPrevious);
+    if (current) current.textContent = formatMoney(recon.operationalCurrent);
+  }
+
   function renderTabs() {
     document.querySelectorAll("[data-tab]").forEach(button => {
       const active = button.dataset.tab === state.activeTab;
@@ -1439,13 +1758,20 @@
     const preventable = ctx.groupComparison.find(group => group.key === PREVENTABLE_GROUP) || { amount: 0, share: 0 };
     const topReason = ctx.comparison.filter(row => row.currentAmount > 0).sort((a, b) => b.currentAmount - a.currentAmount)[0];
     const sparkline = buildHeroSparkline(ctx);
+    const operationalNote = ctx.isOperational && ctx.adjustmentImpact.adjustments.length && Math.abs(ctx.adjustmentImpact.operationalNet) >= 0.01
+      ? `
+        <div class="catchup-note">
+          <strong>Retouren-toerekening actief</strong>
+          <span>Werkelijk betaald: ${formatMoney(ctx.actualCurrent.total)}. Operationele correctie: ${formatSignedMoney(ctx.adjustmentImpact.operationalNet)} in deze ${escapeHtml(ctx.type === "week" ? "week" : PERIOD_TYPES[ctx.type].label.toLowerCase())}. Bronbetalingen blijven ongewijzigd.</span>
+        </div>`
+      : "";
 
     els.hero.className = `hero tone-${h.tone}`;
     els.hero.innerHTML = `
       <div class="hero-lead">
         <div class="hero-eyebrow">${escapeHtml(PERIOD_TYPES[ctx.type].label)} · ${escapeHtml(labelPeriod(ctx.type, ctx.key))}${ctx.isLatest ? ` <span class="tag">Nieuwste</span>` : ""}</div>
         <div class="hero-amount">${formatMoney(ctx.current.total)}</div>
-        <div class="hero-sub">totaal teruggestort · ${formatNumber(ctx.current.count)} creditaties</div>
+        <div class="hero-sub">${ctx.isOperational ? "operationeel toegerekend" : "totaal teruggestort"} · ${formatNumber(ctx.current.count)} creditaties</div>
         <div class="hero-verdict ${h.tone}">${trendArrow(h.hasPrevious ? h.totalDeltaPct : 0)} ${escapeHtml(h.title)}</div>
         <div class="hero-line">${deltaLine}</div>
         <div class="hero-line muted">${avgLine}</div>
@@ -1456,6 +1782,7 @@
             <span>Ruw: ${escapeHtml(labelPeriod("week", ctx.catchUp.previousKey))} ${formatMoney(ctx.catchUp.previousTotal)} + ${escapeHtml(labelPeriod("week", ctx.catchUp.currentKey))} ${formatMoney(ctx.catchUp.currentTotal)}. Voor beoordeling gebruikt: ${formatMoney(ctx.catchUp.normalizedWeekly)} per week${ctx.catchUp.referenceKey ? ` tegenover ${escapeHtml(comparisonLabel)}` : ""}.</span>
           </div>
         ` : ""}
+        ${operationalNote}
       </div>
       ${sparkline ? `<div class="hero-visual">${sparkline}</div>` : ""}
       <div class="hero-kpis">
@@ -1527,7 +1854,7 @@
     const comparable = Boolean(comparisonKey);
     if (els.compareMeta) {
       const originText = state.origin === "all" ? "alle herkomsten" : state.origin.toLowerCase();
-      els.compareMeta.textContent = `${labelPeriod(ctx.type, ctx.key)} vs ${comparisonLabel}${ctx.catchUp ? " · gecorrigeerd weekgemiddelde" : ""} · ${originText} · ${formatMoney(ctx.current.total)} uitbetaald`;
+      els.compareMeta.textContent = `${labelPeriod(ctx.type, ctx.key)} vs ${comparisonLabel}${ctx.catchUp ? " · gecorrigeerd weekgemiddelde" : ""}${ctx.isOperational ? " · operationeel toegerekend" : ""} · ${originText} · ${formatMoney(ctx.current.total)}`;
     }
     const activeGroup = state.selectedGroupFilter && ctx.groupComparison.some(g => g.key === state.selectedGroupFilter) ? state.selectedGroupFilter : "";
     const activeGroupMeta = activeGroup ? ctx.groupComparison.find(g => g.key === activeGroup) : null;
@@ -1751,6 +2078,47 @@
       rows,
       totalDelta: ctx.headline.decisionHasPrevious ? ctx.headline.decisionDelta : null,
       maxAbs: Math.max(1, ...rows.map(row => Math.abs(row.amountDelta))),
+    };
+  }
+
+  function detectReturnBatchCandidate(currentKey) {
+    const targetKey = previousPeriodKey("week", currentKey);
+    if (!targetKey) return null;
+    const currentReturns = originAmountForWeek(currentKey, "Retouren");
+    const previousReturns = originAmountForWeek(targetKey, "Retouren");
+    const currentKS = originAmountForWeek(currentKey, "Klantenservice");
+    const previousKS = originAmountForWeek(targetKey, "Klantenservice");
+    if (!(currentReturns > 0)) return null;
+    const weekKeys = Array.from(new Set(state.records.map(record => record.weekKey).filter(Boolean)))
+      .sort((a, b) => periodSortValue("week", a) - periodSortValue("week", b));
+    const baselineValues = weekKeys
+      .filter(key => key !== currentKey && key !== targetKey)
+      .map(key => originAmountForWeek(key, "Retouren"))
+      .filter(value => value > 0);
+    const baselineKSValues = weekKeys
+      .filter(key => key !== currentKey && key !== targetKey)
+      .map(key => originAmountForWeek(key, "Klantenservice"))
+      .filter(value => value > 0);
+    if (baselineValues.length < 3 || baselineKSValues.length < 3) return null;
+    const baseline = median(baselineValues);
+    const baselineKS = median(baselineKSValues);
+    const normalized = (previousReturns + currentReturns) / 2;
+    const previousLow = previousReturns <= baseline * 0.35;
+    const currentHigh = currentReturns >= baseline * 1.45;
+    const plausible = normalized >= baseline * 0.65 && normalized <= baseline * 1.55;
+    const ksContinued = previousKS >= baselineKS * 0.65 && previousKS <= baselineKS * 1.55
+      && currentKS >= baselineKS * 0.65 && currentKS <= baselineKS * 1.55;
+    if (!previousLow || !currentHigh || !plausible || !ksContinued) return null;
+    return {
+      currentKey,
+      targetKey,
+      currentReturns,
+      previousReturns,
+      currentKS,
+      previousKS,
+      baseline,
+      baselineKS,
+      suggestedAmount: Math.round((Math.max(0, currentReturns - previousReturns) / 2) * 100) / 100,
     };
   }
 
@@ -2081,6 +2449,7 @@
     const administrativeKeys = new Set(
       (ctx.administrativeCatchUps || []).flatMap(pair => [pair.previousKey, pair.currentKey])
     );
+    getAdjustmentPeriodKeys(ctx.type).forEach(periodKey => administrativeKeys.add(periodKey));
     const excludedFlags = allKeys.map(key => administrativeKeys.has(key));
     const control = buildIndividualsControl(allValues, excludedFlags);
     const allOutliers = control.pointSignals;
@@ -2121,7 +2490,8 @@
     const lastGap = forecastAdjustedValues.reduce((last, value, index) => Number.isFinite(value) ? last : index, -1);
     const forecastValues = forecastAdjustedValues.slice(lastGap + 1);
     const forecastFlags = allOutliers.slice(lastGap + 1);
-    const forecast = state.forecastOn && !ctx.catchUp
+    const forecastBasisPaused = ctx.hasAdjustments && !ctx.isOperational;
+    const forecast = state.forecastOn && !ctx.catchUp && !forecastBasisPaused
       ? selectValidatedForecast(forecastValues, forecastFlags, seasonLen, steps)
       : null;
 
@@ -2144,6 +2514,7 @@
       metric: TREND_METRICS[metricKey], metricKey, keys, values, n, fullN: N, observedN: N - missingN, missingN,
       statsN, avg, stdev: control.sigma, upper: control.ucl, bandLo: control.lcl, bandHi: control.ucl, control,
       outliers, forecast, forecastHistoryN: forecastValues.length, maxVal, outCount,
+      forecastBasisPaused,
       highKey: allKeys[hi.i], highVal: hi.v, lowKey: allKeys[lo.i], lowVal: lo.v,
     };
   }
@@ -2155,7 +2526,7 @@
     const type = ctx.type, periodWord = PERIOD_TYPES[type].label.toLowerCase();
     const s = getTrendSeries(ctx);
     const M = s.metric;
-    const forecastPaused = Boolean(ctx.catchUp);
+    const forecastPaused = Boolean(ctx.catchUp || s.forecastBasisPaused);
     const fc = forecastPaused ? null : s.forecast;
     const fcKeys = [];
     if (fc) { let k = ctx.latestKey || s.keys[s.n - 1]; for (let i = 0; i < fc.preds.length; i += 1) { k = nextPeriodKey(type, k); fcKeys.push(k); } }
@@ -2209,7 +2580,7 @@
     ];
     if (forecastPaused) {
       statCards[4] = { label: "Prognose gepauzeerd", value: "n.v.t.", accent: true };
-      statCards[5] = { label: "Inhaalweek eerst beoordelen", value: "Backtest n.v.t." };
+      statCards[5] = { label: s.forecastBasisPaused ? "Kies operationele basis" : "Inhaalweek eerst beoordelen", value: "Backtest n.v.t." };
     }
     if (ctx.catchUp && M.label === "Bedrag") {
       statCards.unshift({
@@ -2303,7 +2674,9 @@
       ? `I-MR-procesgrenzen over ${s.control.n} bruikbare meetpunten: ${M.fmt(s.control.lcl)} tot ${M.fmt(s.control.ucl)}${s.control.provisional ? " (voorlopige basis; 25 punten geeft een stabielere schatting)" : ""}.${activeRule ? ` Actueel patroon: ${activeRule.label}.` : ""}`
       : `Formele I-MR-signalering start bij ${s.control.required} bruikbare meetpunten; beschikbaar: ${s.control.n}.`;
     const forecastNote = forecastPaused
-      ? " Prognose is tijdelijk verborgen omdat deze inhaalweek administratief vertekend is; beoordeel deze ronde op het gecorrigeerde 2-weeksgemiddelde."
+      ? s.forecastBasisPaused
+        ? " Prognose is in de werkelijke betaalweergave verborgen; kies de operationele basis voor een tijdreeks zonder betaalbatchpiek."
+        : " Prognose is tijdelijk verborgen omdat deze inhaalweek administratief vertekend is; beoordeel deze ronde op het gecorrigeerde 2-weeksgemiddelde."
       : !state.forecastOn
         ? " Prognose staat uit."
         : fc
@@ -2358,7 +2731,7 @@
         ${s.missingN ? `<span><i class="lg-gap"></i>Ontbrekende periode</span>` : ""}
         ${fc ? `<span><i class="lg-fc"></i>Prognose</span>` : ""}
       </div>
-      <p class="chart-note">${ctx.catchUp ? `<strong>Inhaalweek:</strong> ${escapeHtml(labelPeriod("week", ctx.catchUp.previousKey))} en ${escapeHtml(labelPeriod("week", ctx.catchUp.currentKey))} samen gemiddeld ${formatMoney(ctx.catchUp.normalizedWeekly)} per week. ` : ""}${escapeHtml(baseChartNote)} ${escapeHtml(processNote)}${escapeHtml(forecastNote)} <span class="chart-note-hint">Klik een punt om die ${escapeHtml(periodWord)} bovenin te openen.</span></p>`;
+      <p class="chart-note">${ctx.isOperational ? "<strong>Operationele basis:</strong> vertraagde Retouren zijn aan de oorspronkelijke week toegerekend. " : ""}${ctx.catchUp ? `<strong>Inhaalweek:</strong> ${escapeHtml(labelPeriod("week", ctx.catchUp.previousKey))} en ${escapeHtml(labelPeriod("week", ctx.catchUp.currentKey))} samen gemiddeld ${formatMoney(ctx.catchUp.normalizedWeekly)} per week. ` : ""}${escapeHtml(baseChartNote)} ${escapeHtml(processNote)}${escapeHtml(forecastNote)} <span class="chart-note-hint">Klik een punt om die ${escapeHtml(periodWord)} bovenin te openen.</span></p>`;
   }
 
   // Periodetotalen-tabel: elke periode vs de vorige (maand vs maand, etc.).
@@ -2401,6 +2774,7 @@
         </thead>
         <tbody>
           ${rows.map(row => {
+            const isAdjustedPeriod = ctx.isOperational && getAdjustmentPeriodKeys(type).has(row.key);
             const administrativePair = (ctx.administrativeCatchUps || []).find(pair => pair.currentKey === row.key || pair.previousKey === row.key);
             const isCatchUpCurrent = Boolean(administrativePair && row.key === administrativePair.currentKey);
             const isMissedRound = Boolean(administrativePair && row.key === administrativePair.previousKey);
@@ -2415,7 +2789,9 @@
               ? ` <span class="pill pill-catchup">inhaalweek</span>`
               : isMissedRound
                 ? ` <span class="pill pill-muted">gemiste ronde</span>`
-                : "";
+                : isAdjustedPeriod
+                  ? ` <span class="pill pill-catchup">toegerekend</span>`
+                  : "";
             if (!row.hasData) {
               return `
               <tr class="row-missing">
@@ -2439,13 +2815,13 @@
           }).join("")}
         </tbody>
       </table>
-      <p class="table-note">${ctx.catchUp && ctx.catchUp.referenceKey ? `De inhaalweek gebruikt het gecorrigeerde tweeweeksgemiddelde tegenover ${escapeHtml(labelPeriod(type, ctx.catchUp.referenceKey))}. ` : ""}Een ontbrekende kalenderperiode blijft leeg en verbreekt de vergelijking; deze wordt nooit als nul ingevuld. Klik een rij met data om die ${escapeHtml(PERIOD_TYPES[type].label.toLowerCase())} bovenin te openen.</p>`;
+      <p class="table-note">${ctx.isOperational ? "Perioden met het label toegerekend bevatten de operationele Retouren-correctie; de werkelijke betaaldatum blijft via Rapportagebasis beschikbaar. " : ""}${ctx.catchUp && ctx.catchUp.referenceKey ? `De inhaalweek gebruikt het gecorrigeerde tweeweeksgemiddelde tegenover ${escapeHtml(labelPeriod(type, ctx.catchUp.referenceKey))}. ` : ""}Een ontbrekende kalenderperiode blijft leeg en verbreekt de vergelijking; deze wordt nooit als nul ingevuld. Klik een rij met data om die ${escapeHtml(PERIOD_TYPES[type].label.toLowerCase())} bovenin te openen.</p>`;
   }
 
   // Aantallen per herkomst (Klantenservice vs Retouren) over tijd.
   function getHerkomstSeries(type) {
     const search = normalizeKey(state.reasonSearch);
-    const recs = state.records.filter(r => !search || normalizeKey(r.reason).includes(search));
+    const recs = analysisSourceRecords().filter(r => !search || normalizeKey(r.reason).includes(search));
     const map = new Map();
     recs.forEach(r => {
       const key = periodKeyForRecord(r, type); if (!key) return;
@@ -2591,7 +2967,7 @@
         <div class="split-seg ret" style="flex:${Math.max(retShare, 3)}">${retShare >= 12 ? `<span>Retouren ${formatPercent(retShare, 0)}</span>` : ""}</div>
         <div class="split-seg ks" style="flex:${Math.max(100 - retShare, 3)}">${(100 - retShare) >= 12 ? `<span>Klantenservice ${formatPercent(100 - retShare, 0)}</span>` : ""}</div>
       </div>
-      <p class="chart-note">Aantallen en bedragen per herkomst, deze ${escapeHtml(periodWord)} vergeleken met ${escapeHtml(referenceText)}.${viewRows.some(row => !row) ? " Ontbrekende perioden zijn als gaten weergegeven." : ""}${ctx.catchUp ? " Verschillen gebruiken het gecorrigeerde tweeweeksgemiddelde." : ""}</p>`;
+      <p class="chart-note">Aantallen en bedragen per herkomst, deze ${escapeHtml(periodWord)} vergeleken met ${escapeHtml(referenceText)}.${ctx.isOperational ? " Retouren volgen de operationele toerekening." : ""}${viewRows.some(row => !row) ? " Ontbrekende perioden zijn als gaten weergegeven." : ""}${ctx.catchUp ? " Verschillen gebruiken het gecorrigeerde tweeweeksgemiddelde." : ""}</p>`;
   }
 
   function renderIssueList(title, items, emptyText) {
@@ -2672,14 +3048,22 @@
     renderQualityDetails();
     setChrome();
     if (!state.records.length && !state.quality) {
-      els.controlBar.hidden = true; els.dashboard.hidden = true; return;
+      els.controlBar.hidden = true;
+      if (els.basisBar) els.basisBar.hidden = true;
+      els.dashboard.hidden = true;
+      return;
     }
     if (!state.records.length) state.activeTab = "control";
     els.controlBar.hidden = !state.records.length;
     els.dashboard.hidden = false;
     renderTabs();
-    if (!state.records.length) return;
+    if (!state.records.length) {
+      if (els.basisBar) els.basisBar.hidden = true;
+      return;
+    }
     renderControls();
+    renderBasisBar();
+    renderAdjustmentPanel();
     const ctx = getDashboardContext();
     renderHero(ctx);
     renderFocusRow(ctx);
@@ -2703,28 +3087,37 @@
     const rows = ctx.comparison
       .filter(row => row.currentAmount > 0 || row.previousAmount > 0)
       .sort((a, b) => b.currentAmount - a.currentAmount)
-      .map(row => ({
-        periode: labelPeriod(ctx.type, ctx.key),
-        vergelijkingsperiode: ctx.comparisonPreviousKey ? labelPeriod(ctx.type, ctx.comparisonPreviousKey) : "",
-        vergelijkingsbasis: ctx.catchUp ? "gecorrigeerd tweeweeksgemiddelde" : "werkelijke periode",
-        reden: row.reason,
-        groep: (GROUP_BY_KEY.get(row.groupKey) || {}).short || "Overig",
-        werkelijk_uitbetaald: row.currentAmount.toFixed(2),
-        beoordelingsbedrag: row.comparisonCurrentAmount.toFixed(2),
-        aantal: row.currentCount,
-        pct_van_totaal: row.currentShare.toFixed(2),
-        vorig_pct_van_totaal: row.previousShare.toFixed(2),
-        verschil_pct_punt: row.shareDelta.toFixed(2),
-        verschil_bedrag: row.amountDelta.toFixed(2),
-      }));
+      .map(row => {
+        const actual = ctx.actualCurrent.reasons.get(row.reason) || { amount: 0, count: 0 };
+        return {
+          periode: labelPeriod(ctx.type, ctx.key),
+          vergelijkingsperiode: ctx.comparisonPreviousKey ? labelPeriod(ctx.type, ctx.comparisonPreviousKey) : "",
+          vergelijkingsbasis: ctx.isOperational ? "operationeel toegerekend" : ctx.catchUp ? "gecorrigeerd tweeweeksgemiddelde" : "werkelijke periode",
+          reden: row.reason,
+          groep: (GROUP_BY_KEY.get(row.groupKey) || {}).short || "Overig",
+          werkelijk_uitbetaald: actual.amount.toFixed(2),
+          bedrag_rapportagebasis: row.currentAmount.toFixed(2),
+          toerekeningscorrectie: (row.currentAmount - actual.amount).toFixed(2),
+          toerekeningsmethode: ctx.isOperational && Math.abs(row.currentAmount - actual.amount) >= 0.01 ? "proportioneel binnen Retouren" : "",
+          beoordelingsbedrag: row.comparisonCurrentAmount.toFixed(2),
+          aantal_rapportagebasis: row.currentCount,
+          pct_van_totaal: row.currentShare.toFixed(2),
+          vorig_pct_van_totaal: row.previousShare.toFixed(2),
+          verschil_pct_punt: row.shareDelta.toFixed(2),
+          verschil_bedrag: row.amountDelta.toFixed(2),
+        };
+      });
     rows.push({
       periode: labelPeriod(ctx.type, ctx.key),
       vergelijkingsperiode: ctx.comparisonPreviousKey ? labelPeriod(ctx.type, ctx.comparisonPreviousKey) : "",
-      vergelijkingsbasis: ctx.catchUp ? "gecorrigeerd tweeweeksgemiddelde" : "werkelijke periode",
+      vergelijkingsbasis: ctx.isOperational ? "operationeel toegerekend" : ctx.catchUp ? "gecorrigeerd tweeweeksgemiddelde" : "werkelijke periode",
       reden: "EINDTOTAAL", groep: "",
-      werkelijk_uitbetaald: ctx.current.total.toFixed(2),
+      werkelijk_uitbetaald: ctx.actualCurrent.total.toFixed(2),
+      bedrag_rapportagebasis: ctx.current.total.toFixed(2),
+      toerekeningscorrectie: (ctx.current.total - ctx.actualCurrent.total).toFixed(2),
+      toerekeningsmethode: ctx.isOperational && ctx.adjustmentImpact.adjustments.length ? "Retourenbatch; bronbetalingen ongewijzigd" : "",
       beoordelingsbedrag: ctx.analysisCurrent.total.toFixed(2),
-      aantal: ctx.current.count,
+      aantal_rapportagebasis: ctx.current.count,
       pct_van_totaal: "100.00", vorig_pct_van_totaal: ctx.comparisonPrevious.total ? "100.00" : "",
       verschil_pct_punt: "", verschil_bedrag: ctx.headline.decisionDelta.toFixed(2),
     });
@@ -2759,6 +3152,7 @@
     catch { throw new Error("Het bestand kon niet gelezen worden. Controleer of het een geldig Excel- of CSV-bestand is."); }
     const parsed = parseWorkbookRecords(workbook, file.name);
     state.records = mergeImportedRecords(state.records, parsed.records);
+    state.adjustments = validAdjustmentsForRecords(state.records, state.adjustments);
     state.reasonList = parsed.reasonList;
     state.meta = parsed.meta;
     state.quality = parsed.quality;
@@ -2771,6 +3165,7 @@
     state.importBannerDismissed = false;
     state.activeTab = "overview";
     saveRecords(state.records, state.meta);
+    saveAdjustments(state.adjustments);
     els.dropZone.querySelector("strong").textContent = file.name;
     els.dropZone.querySelector("span").textContent = `${formatNumber(parsed.quality.parsedRows)} regels verwerkt · ${formatNumber(parsed.quality.storedRecords)} blokken opgeslagen. Klaar — bekijk het overzicht hieronder.`;
     renderDashboard();
@@ -2779,9 +3174,10 @@
   function clearHistory() {
     if (!state.records.length) return;
     if (!window.confirm("Alle lokaal bewaarde creditanalyse wissen?")) return;
-    state.records = []; state.meta = null; state.quality = null;
+    state.records = []; state.meta = null; state.quality = null; state.adjustments = [];
+    state.analysisBasis = "operational";
     state.selectedKey = ""; state.selectedTrendKey = ""; state.activeTab = "overview"; state.selectedGroupFilter = "";
-    if (HAS_STORAGE) { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem(ACTIVE_KEY); }
+    if (HAS_STORAGE) { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem(ACTIVE_KEY); localStorage.removeItem(ADJUSTMENT_KEY); }
     els.dropZone.querySelector("strong").textContent = "Zet hier het vrijdagbestand neer";
     els.dropZone.querySelector("span").textContent = "Sleep het Excel-bestand hierheen of kies het. De app bewaart alleen geaggregeerde cijfers — geen klantnamen of ordernummers.";
     renderDashboard();
@@ -2801,9 +3197,10 @@
   // Wist de analyse automatisch na RETENTION_MS zonder gebruik (privacy).
   function autoWipe() {
     if (!state.records.length) return;
-    state.records = []; state.meta = null; state.quality = null;
+    state.records = []; state.meta = null; state.quality = null; state.adjustments = [];
+    state.analysisBasis = "operational";
     state.selectedKey = ""; state.selectedTrendKey = ""; state.selectedGroupFilter = ""; state.activeTab = "overview";
-    if (HAS_STORAGE) { try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem(ACTIVE_KEY); } catch { /* noop */ } }
+    if (HAS_STORAGE) { try { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(META_KEY); localStorage.removeItem(ACTIVE_KEY); localStorage.removeItem(ADJUSTMENT_KEY); } catch { /* noop */ } }
     if (els.dropZone) {
       els.dropZone.querySelector("strong").textContent = "Analyse automatisch gewist";
       els.dropZone.querySelector("span").textContent = `Na ${RETENTION_LABEL} zonder gebruik is de analyse voor de privacy gewist. Importeer het vrijdagbestand opnieuw om verder te gaan.`;
@@ -2872,7 +3269,7 @@
     font("bold", 15); set(BAD); doc.text("ReMarkt", RIGHT, y + 4, { align: "right" });
     y += 9;
     font("normal", 10); set(MUT);
-    doc.text(`${PERIOD_TYPES[ctx.type].label}rapport · ${periodLabel} vs ${previousLabel} · ${originText}`, M, y); y += 4.5;
+    doc.text(`${PERIOD_TYPES[ctx.type].label}rapport · ${periodLabel} vs ${previousLabel} · ${originText}${ctx.isOperational ? " · operationeel toegerekend" : ""}`, M, y); y += 4.5;
     doc.text(`Opgesteld ${today}`, M, y); y += 3;
     doc.setDrawColor(INK[0], INK[1], INK[2]); doc.setLineWidth(0.5); doc.line(M, y, RIGHT, y); y += 7;
 
@@ -2900,8 +3297,26 @@
       y += 24;
     }
 
+    if (ctx.isOperational && ctx.adjustmentImpact.adjustments.length) {
+      const line = `Werkelijk betaald: ${formatMoney(ctx.actualCurrent.total)}. Operationeel rapportagebedrag: ${formatMoney(ctx.current.total)}. Correctie in deze periode: ${formatSignedMoney(ctx.adjustmentImpact.operationalNet)}. Bronbetalingen zijn niet gewijzigd; redenmix en aantallen binnen Retouren zijn proportioneel verdeeld.`;
+      const adjustmentLines = doc.splitTextToSize(line, CW - 10);
+      const adjustmentBoxHeight = Math.max(18, 10 + adjustmentLines.length * 3.8);
+      doc.setFillColor(247, 238, 216);
+      doc.roundedRect(M, y, CW, adjustmentBoxHeight, 2, 2, "F");
+      font("bold", 10); set([137, 93, 24]);
+      doc.text("Retouren-toerekening actief", M + 5, y + 6.5);
+      font("normal", 8.5); set(INK);
+      doc.text(adjustmentLines, M + 5, y + 12.5);
+      y += adjustmentBoxHeight + 6;
+    }
+
     // KPI cards
-    const kpis = [
+    const kpis = ctx.isOperational ? [
+      { label: "Operationeel toegerekend", value: formatMoney(ctx.current.total), sub: h.decisionHasPrevious ? `${formatSignedPercent(h.totalDeltaPct, 0)} vs referentie` : "geen referentie", color: costColor(h.totalDeltaPct) },
+      { label: "Werkelijk betaald", value: formatMoney(ctx.actualCurrent.total), sub: "aansluiting Finance", color: MUT },
+      { label: "Aantal credits · operationeel", value: formatNumber(ctx.current.count), sub: `${countDelta > 0 ? "+" : countDelta < 0 ? "-" : ""}${formatNumber(Math.abs(countDelta))} vs referentie`, color: costColor(countDelta) },
+      { label: "Voorkombaar (onze fout)", value: formatMoney(preventable.amount), sub: `${formatPercent(preventable.share, 0)} van totaal`, color: preventable.share >= 25 ? BAD : MUT },
+    ] : [
       { label: "Totaal teruggestort", value: formatMoney(ctx.current.total), sub: h.decisionHasPrevious ? `${formatSignedPercent(ctx.catchUp ? h.decisionDeltaPct : h.totalDeltaPct, 0)}${ctx.catchUp ? " gecorr." : ""} vs referentie` : "geen referentie", color: costColor(ctx.catchUp ? h.decisionDeltaPct : h.totalDeltaPct) },
       { label: "Aantal credits", value: formatNumber(ctx.current.count), sub: `${countDelta > 0 ? "+" : countDelta < 0 ? "-" : ""}${formatNumber(Math.abs(countDelta))}${ctx.catchUp ? " gecorr." : ""} vs referentie`, color: costColor(countDelta) },
       { label: "Gemiddeld per credit", value: formatMoney(avgPerCredit), sub: "terugbetaling", color: MUT },
@@ -2952,11 +3367,11 @@
     const drivers = buildChangeDrivers(ctx, 6);
     sectionTitle("Kostendrijvers — Pareto en verandering");
     font("normal", 8); set(MUT);
-    const paretoNote = doc.splitTextToSize(`${pareto.countToEighty} van ${pareto.totalReasons} redenen vormen samen minstens 80% van het uitbetaalde bedrag. % totaal is creditmix, geen retourpercentage van alle verkopen.`, CW);
+    const paretoNote = doc.splitTextToSize(`${pareto.countToEighty} van ${pareto.totalReasons} redenen vormen samen minstens 80% van het rapportagebedrag. % totaal is creditmix, geen retourpercentage van alle verkopen.`, CW);
     doc.text(paretoNote, M, y);
     y += paretoNote.length * 3.5 + 3;
     cols([
-      { text: "Pareto op werkelijk bedrag", x: M, bold: true, color: MUT, size: 8 },
+      { text: "Pareto op rapportagebedrag", x: M, bold: true, color: MUT, size: 8 },
       { text: "Bedrag", x: 126, align: "right", bold: true, color: MUT, size: 8 },
       { text: "% totaal", x: 158, align: "right", bold: true, color: MUT, size: 8 },
       { text: "cumulatief", x: RIGHT, align: "right", bold: true, color: MUT, size: 8 },
@@ -2980,6 +3395,16 @@
         { text: formatSignedMoney(row.amountDelta), x: RIGHT, align: "right", color: costColor(row.amountDelta), size: 8.5, bold: true },
       ]);
     });
+    if (!drivers.rows.length) {
+      cols([{
+        text: h.decisionHasPrevious
+          ? "Geen materiele verandering per reden."
+          : "Nog geen vergelijkbare vorige periode.",
+        x: M,
+        color: MUT,
+        size: 8.5,
+      }]);
+    }
     y += 4;
 
     // Compare table
@@ -3201,12 +3626,12 @@
     // ---- Header ----
     text("Credit Analyse", P, 50, { size: 29, weight: "700" });
     text("ReMarkt", RIGHT, 50, { size: 23, weight: "700", color: BRAND, align: "right" });
-    text(`${PERIOD_TYPES[ctx.type].label}rapport · ${periodLabel} vs ${previousLabel} · ${originText}`, P, 79, { size: 14.5, color: MUT });
+    text(`${PERIOD_TYPES[ctx.type].label}rapport · ${periodLabel} vs ${previousLabel} · ${originText}${ctx.isOperational ? " · operationeel toegerekend" : ""}`, P, 79, { size: 14.5, color: MUT });
     text(`Opgesteld ${today}`, P, 99, { size: 13, color: FAINT });
     hline(112, INK, 1);
 
     // ---- Blok 1: weektotaal ----
-    text(`Totaal terugbetaald · ${PERIOD_TYPES[ctx.type].label.toLowerCase()}`, P, 150, { size: 15, color: MUT });
+    text(`${ctx.isOperational ? "Operationeel toegerekend" : "Totaal terugbetaald"} · ${PERIOD_TYPES[ctx.type].label.toLowerCase()}`, P, 150, { size: 15, color: MUT });
     text(formatMoney(ctx.current.total), P, 214, { size: 60, weight: "800" });
     const reportDeltaPct = ctx.catchUp ? h.decisionDeltaPct : h.totalDeltaPct;
     const reportPreviousTotal = ctx.catchUp ? ctx.comparisonPrevious.total : ctx.previous.total;
@@ -3250,7 +3675,14 @@
       : "Nog geen redenen beschikbaar voor een Pareto-analyse.";
     text(paretoSummary, P, driverSummaryY, { size: 12.5, color: MUT });
     if (!drivers.rows.length) {
-      text("Nog geen vergelijkbare vorige periode.", P, driverRowsY + 18, { size: 13, color: FAINT });
+      text(
+        h.decisionHasPrevious
+          ? "Geen materiele verandering: beide operationele weken sluiten op hetzelfde totaal."
+          : "Nog geen vergelijkbare vorige periode.",
+        P,
+        driverRowsY + 18,
+        { size: 13, color: FAINT },
+      );
     } else {
       const driverBarX = 430;
       const driverBarW = 420;
@@ -3311,7 +3743,7 @@
     text(h.decisionHasPrevious ? formatSignedMoney(h.decisionDelta) : "—", colDeltaE, totY, { size: 15, weight: "800", color: costColor(h.decisionDelta), align: "right" });
 
     // Footer
-    text("ReMarkt Credit Analyse · geaggregeerde cijfers, zonder klantnamen of ordernummers.", P, H - 20, { size: 12, color: FAINT });
+    text(`ReMarkt Credit Analyse · ${ctx.isOperational ? `werkelijk betaald ${formatMoney(ctx.actualCurrent.total)} · ` : ""}geaggregeerd, zonder klantnamen of ordernummers.`, P, H - 20, { size: 12, color: FAINT });
 
     // Voor previews/tests: monteer de canvas in plaats van te downloaden.
     if (opts.mount) { canvas.style.width = `${W}px`; canvas.style.height = "auto"; opts.mount.appendChild(canvas); return canvas; }
@@ -3364,6 +3796,15 @@
     document.querySelectorAll("[data-period-type]").forEach(button => {
       button.addEventListener("click", () => { state.periodType = button.dataset.periodType; state.selectedKey = ""; renderDashboard(); });
     });
+    if (els.basisBar) {
+      els.basisBar.addEventListener("click", event => {
+        const button = getClosestTarget(event, "[data-analysis-basis]");
+        if (!button) return;
+        state.analysisBasis = button.dataset.analysisBasis === "actual" ? "actual" : "operational";
+        state.selectedKey = "";
+        renderDashboard();
+      });
+    }
     document.querySelectorAll("[data-tab]").forEach(button => {
       button.addEventListener("click", () => { state.activeTab = button.dataset.tab; renderDashboard(); });
       button.addEventListener("keydown", event => {
@@ -3456,6 +3897,60 @@
         if (getClosestTarget(event, "[data-dismiss-banner]")) { state.importBannerDismissed = true; els.importBanner.hidden = true; }
       });
     }
+    if (els.adjustmentPanel) {
+      els.adjustmentPanel.addEventListener("change", event => {
+        const method = getClosestTarget(event, "[data-adjustment-method]");
+        if (!method) return;
+        const form = method.closest("[data-adjustment-form]");
+        const amount = form && form.querySelector("[data-adjustment-amount]");
+        if (!amount) return;
+        if (method.value === "estimate") {
+          amount.value = Number(form.dataset.suggested || 0).toFixed(2);
+          amount.setAttribute("readonly", "");
+        } else {
+          amount.removeAttribute("readonly");
+          amount.focus();
+          amount.select();
+        }
+        updateAdjustmentPreview();
+      });
+      els.adjustmentPanel.addEventListener("input", event => {
+        if (getClosestTarget(event, "[data-adjustment-amount]")) updateAdjustmentPreview();
+      });
+      els.adjustmentPanel.addEventListener("submit", event => {
+        const form = getClosestTarget(event, "[data-adjustment-form]");
+        if (!form) return;
+        event.preventDefault();
+        const setup = getAdjustmentSetup(form.dataset.currentKey);
+        const amount = Number(form.querySelector("[data-adjustment-amount]").value);
+        const method = form.querySelector("[data-adjustment-method]").value === "exact" ? "exact" : "estimate";
+        if (!(amount > 0) || amount > setup.currentReturns + 0.01) {
+          window.alert(`Vul een bedrag in tussen € 0,01 en ${formatMoney(setup.currentReturns)}.`);
+          return;
+        }
+        const adjustment = normalizeAdjustment({
+          currentKey: setup.currentKey,
+          targetKey: setup.targetKey,
+          amount,
+          method,
+          createdAt: new Date().toISOString(),
+        });
+        state.adjustments = [
+          ...state.adjustments.filter(item => item.currentKey !== setup.currentKey),
+          adjustment,
+        ].filter(Boolean);
+        state.analysisBasis = "operational";
+        saveAdjustments(state.adjustments);
+        renderDashboard();
+      });
+      els.adjustmentPanel.addEventListener("click", event => {
+        const button = getClosestTarget(event, "[data-remove-adjustment]");
+        if (!button) return;
+        state.adjustments = state.adjustments.filter(item => item.currentKey !== button.dataset.removeAdjustment);
+        saveAdjustments(state.adjustments);
+        renderDashboard();
+      });
+    }
   }
 
   if (IS_BROWSER) {
@@ -3480,6 +3975,7 @@
       renderDashboard, generateReportPdf, generateReportImage, exportCurrentCsv, buildPlainConclusion,
       forecastSeries, validateForecast, naiveForecast, selectValidatedForecast,
       getTrendSeries, buildIndividualsControl, findAdministrativeCatchUps,
+      normalizeAdjustment, validAdjustmentsForRecords, applyReturnAdjustments, detectReturnBatchCandidate,
       buildParetoRows, buildChangeDrivers, completePeriodKeys, nextPeriodKey, previousPeriodKey, retentionExpired,
       FOCUS_REASONS, REASON_GROUPS, PREVENTABLE_GROUP, RETENTION_MS,
     };

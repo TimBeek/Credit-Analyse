@@ -6,6 +6,10 @@ preview-verloop.html
 preview-verloop13.html
 preview-catchup.html
 preview-catchup-image.html
+preview-batch.html
+preview-batch-control.html
+preview-batch-actual.html
+preview-batch-image.html
 
 # OS / editor
 .DS_Store

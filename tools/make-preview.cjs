@@ -154,4 +154,56 @@ app.generateReportImage(app.getDashboardContext(),{mount:document.getElementById
 </body>`);
 fs.writeFileSync(path.join(__dirname, "..", "preview-catchup-image.html"), catchImageHtml, "utf8");
 
-console.log(`previews geschreven met ${records.length} standaardrecords en ${catchRecords.length} inhaalweekrecords`);
+// Retourenbatch-preview: Klantenservice loopt normaal door; alleen Retouren
+// van W29 en W30 zijn in W30 betaald. De operationele overlay verdeelt die.
+const batchRows = [];
+for (let w = 1; w <= 28; w += 1) {
+  batchRows.push([w, "Annulering door klant", "Klantenservice", 7468, 20]);
+  batchRows.push([w, "Niet werkzaam", "Retouren", 10000, 25]);
+  batchRows.push([w, "Transportschade", "Retouren", 5489.50, 15]);
+}
+batchRows.push([29, "Annulering door klant", "Klantenservice", 7468, 20]);
+batchRows.push([30, "Annulering door klant", "Klantenservice", 7468, 20]);
+batchRows.push([30, "Niet werkzaam", "Retouren", 20000, 50]);
+batchRows.push([30, "Transportschade", "Retouren", 10979, 30]);
+const batchRecords = batchRows.map(([week, reason, origin, amount, count]) => {
+  const p = api.makePeriodKeys(null, 2026, week);
+  return { ...p, reason, origin, amount, count };
+});
+const batchAdjustment = [{
+  currentKey: "2026-W30",
+  targetKey: "2026-W29",
+  origin: "Retouren",
+  amount: 15489.50,
+  method: "estimate",
+  createdAt: "2026-07-25T12:00:00.000Z",
+}];
+const batchSeed = `<script>
+try {
+  localStorage.setItem("remarkt.creditAnalyse.records.v2", ${JSON.stringify(JSON.stringify(batchRecords))});
+  localStorage.setItem("remarkt.creditAnalyse.meta.v2", JSON.stringify({ filename: "retourenbatch-week30.xlsx", importedAt: "2026-07-25T12:00:00.000Z" }));
+  localStorage.setItem("remarkt.creditAnalyse.adjustments.v1", ${JSON.stringify(JSON.stringify(batchAdjustment))});
+} catch (e) {}
+</script>
+`;
+const batchHtml = cleanIndex.replace('<script src="assets/xlsx.full.min.js"></script>', batchSeed + '<script src="assets/xlsx.full.min.js"></script>');
+fs.writeFileSync(path.join(__dirname, "..", "preview-batch.html"), batchHtml, "utf8");
+fs.writeFileSync(path.join(__dirname, "..", "preview-batch-control.html"), batchHtml.replace("</body>", `<script>
+var a=window.creditAnalyseApp; a.state.activeTab="control"; a.renderDashboard();
+</script>
+</body>`), "utf8");
+fs.writeFileSync(path.join(__dirname, "..", "preview-batch-actual.html"), batchHtml.replace("</body>", `<script>
+var a=window.creditAnalyseApp; a.state.analysisBasis="actual"; a.renderDashboard();
+</script>
+</body>`), "utf8");
+const batchImageHtml = batchHtml
+  .replace("</head>", "<style>#creditApp{display:none!important}body{background:#e9e9e6}</style></head>")
+  .replace("</body>", `<div id="imgbox" style="margin:24px;width:1080px;background:#fff;box-shadow:0 10px 40px rgba(0,0,0,.15)"></div>
+<script>
+var app=window.creditAnalyseApp;
+app.generateReportImage(app.getDashboardContext(),{mount:document.getElementById("imgbox")});
+</script>
+</body>`);
+fs.writeFileSync(path.join(__dirname, "..", "preview-batch-image.html"), batchImageHtml, "utf8");
+
+console.log(`previews geschreven met ${records.length} standaardrecords, ${catchRecords.length} inhaalweekrecords en ${batchRecords.length} Retourenbatch-records`);

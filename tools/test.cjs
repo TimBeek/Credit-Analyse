@@ -22,6 +22,8 @@ function resetState(records) {
   api.state.reasonSearch = "";
   api.state.periodType = "week";
   api.state.selectedKey = "";
+  api.state.adjustments = [];
+  api.state.analysisBasis = "operational";
 }
 
 function rec(weekKey, monthKey, reason, origin, amount, count) {
@@ -309,7 +311,57 @@ ok("trend bewaart ontbrekende week als null", gapTrend.keys.includes("2026-W26")
 ok("trend rapporteert het aantal ontbrekende perioden", gapTrend.missingN === 1, `got ${gapTrend.missingN}`);
 
 // ---------------------------------------------------------------------------
-console.log("\n12. Privacy: automatisch wissen na 30 min inactiviteit");
+console.log("\n12. Retourenbatch: alleen Retouren operationeel toerekenen");
+const batchRecords = [];
+for (let week = 25; week <= 28; week += 1) {
+  batchRecords.push(rec(`2026-W${week}`, "2026-06", "Annulering door klant", "Klantenservice", 7468, 20));
+  batchRecords.push(rec(`2026-W${week}`, "2026-06", "Niet werkzaam", "Retouren", 10000, 25));
+  batchRecords.push(rec(`2026-W${week}`, "2026-06", "Transportschade", "Retouren", 5489.50, 15));
+}
+batchRecords.push(rec("2026-W29", "2026-07", "Annulering door klant", "Klantenservice", 7468, 20));
+batchRecords.push(rec("2026-W30", "2026-07", "Annulering door klant", "Klantenservice", 7468, 20));
+batchRecords.push(rec("2026-W30", "2026-07", "Niet werkzaam", "Retouren", 20000, 50));
+batchRecords.push(rec("2026-W30", "2026-07", "Transportschade", "Retouren", 10979, 30));
+resetState(batchRecords);
+api.state.selectedKey = "2026-W30";
+const batchCandidate = api.detectReturnBatchCandidate("2026-W30");
+ok("dubbele Retourenbatch wordt als kandidaat herkend", Boolean(batchCandidate));
+ok("voorstel verplaatst helft Retourenverschil", near(batchCandidate.suggestedAmount, 15489.50), `got ${batchCandidate.suggestedAmount}`);
+
+const batchAdjustment = api.normalizeAdjustment({
+  currentKey: "2026-W30", targetKey: "2026-W29", amount: 15489.50, method: "estimate",
+});
+const adjustedBatchRecords = api.applyReturnAdjustments(batchRecords, [batchAdjustment]);
+const rawBatchTotal = batchRecords.reduce((sum, row) => sum + row.amount, 0);
+const adjustedBatchTotal = adjustedBatchRecords.reduce((sum, row) => sum + row.amount, 0);
+ok("toerekening bewaart gecombineerd eurototaal exact", near(rawBatchTotal, adjustedBatchTotal, 0.01), `${rawBatchTotal} vs ${adjustedBatchTotal}`);
+ok("Klantenservice W29 blijft €7.468", near(adjustedBatchRecords.filter(r => r.weekKey === "2026-W29" && r.origin === "Klantenservice").reduce((s, r) => s + r.amount, 0), 7468));
+ok("Klantenservice W30 blijft €7.468", near(adjustedBatchRecords.filter(r => r.weekKey === "2026-W30" && r.origin === "Klantenservice").reduce((s, r) => s + r.amount, 0), 7468));
+ok("Retouren worden €15.489,50 per operationele week",
+  near(adjustedBatchRecords.filter(r => r.weekKey === "2026-W29" && r.origin === "Retouren").reduce((s, r) => s + r.amount, 0), 15489.50)
+  && near(adjustedBatchRecords.filter(r => r.weekKey === "2026-W30" && r.origin === "Retouren").reduce((s, r) => s + r.amount, 0), 15489.50));
+
+api.state.adjustments = [batchAdjustment];
+let batchCtx = api.getDashboardContext();
+ok("werkelijk betaald blijft W29 €7.468 en W30 €38.447",
+  near(batchCtx.actualPrevious.total, 7468) && near(batchCtx.actualCurrent.total, 38447),
+  `${batchCtx.actualPrevious.total} / ${batchCtx.actualCurrent.total}`);
+ok("operationeel worden beide weken €22.957,50",
+  near(batchCtx.previous.total, 22957.50) && near(batchCtx.current.total, 22957.50),
+  `${batchCtx.previous.total} / ${batchCtx.current.total}`);
+ok("operationele vergelijking heeft geen kunstmatige piek", near(batchCtx.headline.totalDeltaPct, 0));
+ok("algemene inhaalcorrectie wordt niet dubbel toegepast", batchCtx.catchUp === null);
+ok("correctie is zichtbaar in signalen", batchCtx.signals.some(signal => /toegerekend/.test(signal.title)));
+
+api.state.analysisBasis = "actual";
+batchCtx = api.getDashboardContext();
+ok("werkelijke basis toont de betaalpiek terug", near(batchCtx.current.total, 38447) && near(batchCtx.previous.total, 7468));
+ok("prognose pauzeert op werkelijke betaalbasis", api.getTrendSeries(batchCtx).forecastBasisPaused === true);
+ok("ongeldige overboeking boven Retourentotaal wordt geweigerd",
+  api.validAdjustmentsForRecords(batchRecords, [{ ...batchAdjustment, amount: 40000 }]).length === 0);
+
+// ---------------------------------------------------------------------------
+console.log("\n13. Privacy: automatisch wissen na 30 min inactiviteit");
 const NOW = 1000000000000;
 ok("RETENTION_MS = 30 minuten", api.RETENTION_MS === 30 * 60 * 1000, `got ${api.RETENTION_MS}`);
 ok("geen tijdstempel → niet wissen", api.retentionExpired(0, NOW) === false);
